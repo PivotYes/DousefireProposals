@@ -54,6 +54,46 @@ function parseTaskId(input: string): string {
   return m ? m[1] : s.replace(/^#/, "");
 }
 
+// Reads the Proposals list from ClickUp, 5 pages (500 tasks) at a time instead of one page after another,
+// and keeps the result for a minute so repeat searches don't go back to ClickUp.
+let CACHE: { at: number; key: string; jobs: any[] } = { at: 0, key: "", jobs: [] };
+async function loadJobs(listId: string, H: Record<string, string>, wanted: string[]) {
+  const key = listId + "|" + wanted.join("|");
+  if (CACHE.key === key && Date.now() - CACHE.at < 60000) return CACHE.jobs;
+  const page = async (n: number, sq: string) => {
+    const r = await fetch(`${API}/list/${listId}/task?page=${n}&subtasks=true${sq}`, { headers: H });
+    const d = await r.json();
+    if (!r.ok) throw new Error(String(d?.err || r.status));
+    return d;
+  };
+  const scan = async (byStatus: boolean) => {
+    const sq = byStatus ? wanted.map((st) => `&statuses[]=${encodeURIComponent(st)}`).join("") : "";
+    const out = new Map<string, any>();
+    let seen = 0;
+    for (let start = 0; start < 20; start += 5) {
+      const batch = await Promise.all([0, 1, 2, 3, 4].map((i) => page(start + i, sq)));
+      let done = false;
+      for (const d of batch) {
+        const tasks = d.tasks || [];
+        seen += tasks.length;
+        for (const t of tasks) {
+          const status = String(t.status?.status || "").toLowerCase();
+          if (wanted.includes(status)) out.set(t.id, { id: t.id, name: t.name, status: t.status?.status || "", url: t.url, custom_id: String(t.custom_id || "").toLowerCase() });
+        }
+        if (d.last_page || !tasks.length) done = true;
+      }
+      if (done) break;
+    }
+    return { jobs: [...out.values()], seen };
+  };
+  let res = { jobs: [] as any[], seen: 0 };
+  try { res = await scan(true); } catch { /* fall through to a full read */ }
+  // Nothing came back for those status names (they may be spelled differently in ClickUp): read the whole list and filter here
+  if (!res.seen) res = await scan(false);
+  CACHE = { at: Date.now(), key, jobs: res.jobs };
+  return res.jobs;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   try {
@@ -68,36 +108,17 @@ Deno.serve(async (req) => {
     const body = await req.json();
     const H = { Authorization: token };
 
-    if (body.action === "search") {
-      const q = String(body.q || "").trim().toLowerCase();
-      if (!q) return json({ tasks: [] });
+    // Open and In Progress jobs. "list" returns all of them (the app searches them as you type); "search" filters by name here.
+    if (body.action === "list" || body.action === "search") {
       const wanted = (Array.isArray(body.statuses) && body.statuses.length ? body.statuses : DEFAULT_STATUSES)
         .map((s: unknown) => String(s).trim().toLowerCase());
-      // Ask ClickUp for only the wanted statuses first (fast). If that finds nothing, read the whole list and filter here,
-      // in case the status names are spelled differently in ClickUp.
-      const scan = async (byStatus: boolean) => {
-        const out: any[] = [];
-        const sq = byStatus ? wanted.map((st: string) => `&statuses[]=${encodeURIComponent(st)}`).join("") : "";
-        for (let page = 0; page < 10 && out.length < 20; page++) {
-          const r = await fetch(`${API}/list/${listId}/task?page=${page}&subtasks=true${sq}`, { headers: H });
-          const d = await r.json();
-          if (!r.ok) throw new Error(String(d?.err || r.status));
-          for (const t of d.tasks || []) {
-            const status = String(t.status?.status || "").toLowerCase();
-            if (!wanted.includes(status)) continue;
-            if (String(t.name).toLowerCase().includes(q) || t.id === q || String(t.custom_id || "").toLowerCase() === q)
-              out.push({ id: t.id, name: t.name, status: t.status?.status || "", url: t.url });
-          }
-          if (d.last_page || !(d.tasks || []).length) break;
-        }
-        return out;
-      };
-      let found: any[] = [];
-      try { found = await scan(true); } catch { found = []; }
-      if (!found.length) {
-        try { found = await scan(false); } catch (e) { return json({ error: "clickup_error", detail: String(e) }, 502); }
-      }
-      return json({ tasks: found.slice(0, 20) });
+      let jobs: any[];
+      try { jobs = await loadJobs(listId, H, wanted); }
+      catch (e) { return json({ error: "clickup_error", detail: String(e) }, 502); }
+      if (body.action === "list") return json({ tasks: jobs });
+      const q = String(body.q || "").trim().toLowerCase();
+      if (!q) return json({ tasks: [] });
+      return json({ tasks: jobs.filter((t) => t.name.toLowerCase().includes(q) || t.id === q || t.custom_id === q).slice(0, 20) });
     }
 
     // Only tasks in the Proposals list can be read or have files attached
