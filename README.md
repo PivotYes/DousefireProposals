@@ -1,7 +1,7 @@
 # Dousefire Proposal Builder
 
 Fire sprinkler proposal builder: questions, scope review, live proposal with letterhead,
-PDF / Word / CSV downloads, shared drafts with search, proposal numbers from 1001, review and approval,
+PDF / Word / CSV downloads, shared drafts with search, proposal numbers from 10001, review and approval,
 ClickUp and QuickBooks connections, Send feedback, and an admin-editable logic map.
 
 ## Files
