@@ -284,6 +284,15 @@ table.team input,table.team select{width:100%;min-width:120px;padding:6px 8px}
 .cuMap{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px}
 .qbLink a{font-weight:600;color:inherit}
 .qbWarn{background:var(--warn-soft);color:var(--warn);border-radius:8px;padding:8px 10px}
+.noqb{display:inline-block;margin-left:8px;font-size:11.5px;font-weight:700;color:var(--danger);border:1px solid var(--danger);border-radius:999px;padding:0 7px}
+input.bad{border-color:var(--danger)!important}
+.ccode{flex:0 1 150px!important;max-width:160px}
+.qbCard{width:min(920px,100%);max-height:calc(100vh - 40px);overflow:auto}
+.qbGrid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media (max-width:640px){.qbGrid{grid-template-columns:1fr}}
+.qbVal{font-weight:500;color:var(--ink);font-size:14px}
+table.qb tr.miss td{background:var(--warn-soft)}
+a.btn{text-decoration:none;display:inline-block}
 </style>
 <style type="text/css" nonce="">.redacted {
   color: red !important;
@@ -390,6 +399,8 @@ table.team input,table.team select{width:100%;min-width:120px;padding:6px 8px}
 <section class="view map" id="v-map"></section>
 <section class="view drafts" id="v-team"></section>
 <div class="authModal" id="authModal" hidden></div>
+<div class="authModal" id="qbModal" hidden></div>
+<datalist id="qbList"></datalist>
 <div class="toast" id="toast" role="status"></div>
 
 <script>
@@ -451,7 +462,7 @@ const areaItems = (p, rates) => a => (a.areas || []).flatMap((ar, i) => {
   normArea(ar);
   const nm = String(ar.name || ar.floors || '').trim() || 'Area ' + (i + 1), g = `ar-${ar.id}`, res = p === 'r';
   return ar.heads.map(h => ({
-    id:`${p}-ar-${ar.id}-${h.id}`, cfgKey:`${p}-ar-${h.type || 'std'}`, code:`${p==='r'?'NRES':'NCOM'}-HDS`, sec:SEC_INST, grp:g, htype:h.type,
+    id:`${p}-ar-${ar.id}-${h.id}`, cfgKey:`${p}-ar-${h.type || 'std'}`, code:(QB_AREA[p] || {})[h.type] || '', qbSet:true, sec:SEC_INST, grp:g, htype:h.type,
     grpText:m => areaText(ar, m, res),
     name:`Sprinkler heads: ${nm}${h.type ? ' (' + (HEAD_TYPES.find(t => t[0] === h.type) || ['',''])[1].toLowerCase() + ')' : ''}`,
     xname:`${HEAD_WORDS[h.type] || ''} sprinkler heads for ${nm}`.trim(),
@@ -475,9 +486,9 @@ function riserText(r, m){
 }
 const riserItems = p => a => a.sp !== 'yes' ? [] : (a.risers || []).flatMap((r, i) => {
   const g = `rs-${r.id}`, nm = String(r.loc || '').trim() || 'Riser ' + (i + 1), grpText = m => riserText(r, m);
-  const out = [{id:`${p}-${g}-rs`, cfgKey:`${p}-riser-${r.kind === 'comb' ? 'comb' : 'sp'}`, code:r.kind==='comb' ? 'NCOM-CSP' : 'NCOM-STP', sec:SEC_SP, grp:g, grpText, name:`${nm}: ${r.kind==='comb' ? 'combined standpipe riser' : 'standpipe riser'}`, xname:`${r.kind==='comb' ? 'combined standpipe' : 'standpipe'} riser`, rate:r.kind==='comb' ? 5200 : 3800, def:always('in'), rule:'One per riser'}];
-  if (n0(r.hv)) out.push({id:`${p}-${g}-hv`, cfgKey:`${p}-riser-hv`, code:'NCOM-HV', sec:SEC_SP, grp:g, grpText, name:`${nm}: 2 ½" angle hose valves`, xname:'angle hose valves', unit:'valve', rate:420, qty:()=>n0(r.hv), def:always('in'), rule:'Per hose valve'});
-  if (r.kind === 'comb' && n0(r.fcv)) out.push({id:`${p}-${g}-fcv`, cfgKey:`${p}-riser-fcv`, code:'NCOM-FCV', sec:SEC_SP, grp:g, grpText, name:`${nm}: floor control assemblies`, xname:'floor control assemblies', unit:'valve', rate:1350, qty:()=>n0(r.fcv), def:always('in'), rule:'Per floor control assembly, combined risers only'});
+  const out = [{id:`${p}-${g}-rs`, cfgKey:`${p}-riser-${r.kind === 'comb' ? 'comb' : 'sp'}`, code:(QB_RISER[r.kind === 'comb' ? 'comb' : 'sp'] || {})[r.size] || '', qbSet:true, sec:SEC_SP, grp:g, grpText, name:`${nm}: ${r.kind==='comb' ? 'combined standpipe riser' : 'standpipe riser'}`, xname:`${r.kind==='comb' ? 'combined standpipe' : 'standpipe'} riser`, rate:r.kind==='comb' ? 5200 : 3800, def:always('in'), rule:'One per riser'}];
+  if (n0(r.hv)) out.push({id:`${p}-${g}-hv`, cfgKey:`${p}-riser-hv`, code:'', qbSet:true, sec:SEC_SP, grp:g, grpText, name:`${nm}: 2 ½" angle hose valves`, xname:'angle hose valves', unit:'valve', rate:420, qty:()=>n0(r.hv), def:always('in'), rule:'Per hose valve'});
+  if (r.kind === 'comb' && n0(r.fcv)) out.push({id:`${p}-${g}-fcv`, cfgKey:`${p}-riser-fcv`, code:QB_FCV[r.fcvSize] || '', qbSet:true, sec:SEC_SP, grp:g, grpText, name:`${nm}: floor control assemblies`, xname:'floor control assemblies', unit:'valve', rate:1350, qty:()=>n0(r.fcv), def:always('in'), rule:'Per floor control assembly, combined risers only'});
   return out;
 });
 
@@ -489,6 +500,12 @@ const Q_DWG = {id:'dwg', label:'Who provides the sprinkler drawings?', type:'cho
 const Q_BFA = {id:'bfa', label:'Include backflow application?', type:'choice', opts:yn, def:''};
 const Q_BFA_PARTS = {id:'bfaParts', label:'Backflow application covers', type:'multi', opts:[['fire','Fire'],['dom','Domestic'],['fee','RCDOH fee']], def:[], show:a=>a.bfa==='yes', showRule:'Backflow application is included'};
 const Q_BFP = {id:'bfp', label:'Include backflow preventer?', type:'choice', opts:yn, def:''};
+const Q_BF_DETAILS = [
+  {id:'bfQty', label:'How many backflow preventers?', type:'number', def:'', show:a=>a.bfp==='yes', showRule:'Backflow preventer is included'},
+  {id:'bfSize', label:'Backflow preventer size', type:'choice', opts:[['2','2"'],['3','3"'],['4','4"'],['6','6"']], def:'', show:a=>a.bfp==='yes', showRule:'Backflow preventer is included'},
+  {id:'bfType', label:'Backflow preventer type', type:'choice', opts:[['dcda','DCDA'],['rpz','RPZ'],['either','DCDA or RPZ']], def:'', show:a=>a.bfp==='yes', showRule:'Backflow preventer is included'},
+];
+const bfpText = (q, a) => `${q > 1 ? q + ' - ' : ''}${a.bfSize ? a.bfSize + '" ' : ''}Backflow Preventer${q > 1 ? 's' : ''}${a.bfType ? ', ' + ({dcda:'DCDA', rpz:'RPZ', either:'DCDA or RPZ'})[a.bfType] : ''} with supervisory switch`;
 const Q_DRY = {id:'dry', label:'Dry sprinkler heads included?', type:'choice', opts:yn, def:''};
 const Q_DRY_QTY = {id:'dryQty', label:'Number of dry heads', type:'number', def:'', show:a=>a.dry==='yes', showRule:'Dry heads included'};
 const Q_DRY_TYPE = {id:'dryType', label:'Dry head type', type:'choice', opts:[['reg','Regular'],['ext','Extended coverage'],['flex','Dry Flex']], def:'', show:a=>a.dry==='yes', showRule:'Dry heads included'};
@@ -600,10 +617,7 @@ const PUMP_TYPES = {hsc:'Horizontal Split Case', vil:'Vertical In-Line', es:'End
 const COM_Q = [
   Q_FLOORS, Q_FLOORS_CUSTOM, Q_AREAS, Q_DWG,
   Q_DRY, Q_DRY_QTY, Q_DRY_TYPE, Q_DRY_LOC,
-  Q_BFA, Q_BFA_PARTS, Q_BFP,
-  {id:'bfQty', label:'How many backflow preventers?', type:'number', def:'', show:a=>a.bfp==='yes', showRule:'Backflow preventer is included'},
-  {id:'bfSize', label:'Backflow preventer size', type:'choice', opts:[['2','2"'],['3','3"'],['4','4"'],['6','6"']], def:'', show:a=>a.bfp==='yes', showRule:'Backflow preventer is included'},
-  {id:'bfType', label:'Backflow preventer type', type:'choice', opts:[['dcda','DCDA'],['rpz','RPZ'],['either','DCDA or RPZ']], def:'', show:a=>a.bfp==='yes', showRule:'Backflow preventer is included'},
+  Q_BFA, Q_BFA_PARTS, Q_BFP, ...Q_BF_DETAILS,
   {id:'fdc', label:'Fire department connection?', type:'choice', opts:[['no','No'],['yes','Yes'],['siamese','Yes, Siamese connection']], def:''},
   {id:'garage', label:'Parking garage (dry system)?', type:'choice', opts:yn, def:''},
   {id:'garageHeads', label:'Upright heads in the garage', type:'number', def:'', show:a=>a.garage==='yes', showRule:'Parking garage is Yes'},
@@ -665,6 +679,37 @@ const TYPES = {
   com:{label:'Commercial (NFPA 13)', std:'13', Q:COM_Q, I:COM_I},
 };
 const NO_TYPE = {label:'', std:'', Q:[], I:[]};
+
+/* QuickBooks items from Dousefire's item list. Functions pick the item by size or type. */
+const QB_BY = {
+  bfp: a => ({'2':'Nres2bacp', '4':'Ncomin4bac', '6':'Ncomin6bac'})[a.bfSize] || '',
+  dry: a => ({reg:'Nresrdsh', ext:'Ncomindswec', flex:'Nresdfsh-1'})[a.dryType] || '',
+  roof: a => ({'4':'Ncomin4RM', '6':'ncomin6rm'})[a.roofSize] || '',
+};
+QB_BY.bfp.label = 'By size: 2" Nres2bacp, 4" Ncomin4bac, 6" Ncomin6bac';
+QB_BY.dry.label = 'By type: Nresrdsh, Ncomindswec, Nresdfsh-1';
+QB_BY.roof.label = 'By size: 4" Ncomin4RM, 6" ncomin6rm';
+const QB_DEFAULTS = {
+  'c-eng':'Ncominfss', 'c-bfa-f':'Ncominbaffl', 'c-bfa-d':'Ncominbafdl', 'c-bfp':QB_BY.bfp, 'c-fdc':'Ncominfdc', 'c-cab':'Nrescwesh', 'c-psi':'Nressi',
+  'c-gdv':'Ncomindss', 'c-ghd':'Ncominush', 'c-roof':QB_BY.roof, 'c-fp':'Ncominfirep', 'c-pump':'Ncominfirep', 'c-dryin':QB_BY.dry,
+  'c-flw':'Ncominhft', 'c-csw':'Ncomincssh', 'c-cpd':'Ncomincpsh', 'c-dr1':'Nresrdsh', 'c-dr2':'Ncomindswec', 'c-dr3':'Nresdfsh-1',
+  'r-eng':'Nresdraw', 'r-fld':'Nresalfsu', 'r-rsr':'Nres2rwfs', 'r-atc':'Nresatticrsh', 'r-dryin':QB_BY.dry, 'r-bfa-f':'Ncominbaffl', 'r-bfa-d':'Ncominbafdl',
+  'r-bfp':'Nres2bacp', 'r-hbx':'Nresvfh', 'r-cab':'Nrescwesh', 'r-psi':'Nressi', 'r-flw':'Ncominhft', 'r-csw':'Nrescssh', 'r-cpd':'Nrescpsh',
+  'r-dr1':'Nresrdsh', 'r-dr2':'Nresdshwec', 'r-dr3':'Nresdfsh-1', 'r-pump':'Ncominfirep',
+};
+const QB_AREA = {c:{std:'Ncominrpsh', conc:'Ncomincpsh', up:'Ncominush', sw:'Ncominssh', csw:'Ncomincssh'}, r:{std:'Nrespsh', conc:'Nrescpsh', up:'Ncominush', sw:'Nresssh', csw:'Nrescssh'}};
+const QB_RISER = {sp:{'4':'Ncomin4sris', '6':'Ncomin6sr', '8':'Ncomin8sr'}, comb:{'4':'Ncomin4cssr', '6':'Ncomin6cssr', '8':'Ncomin8cssr'}};
+const QB_FCV = {'2':'Ncomin2fca', '2½':'Ncom212fca', '3':'Ncomin3fca', '4':'Ncomin4fio'};
+function mapDefCode(key){
+  const d = QB_DEFAULTS[key]; if (typeof d === 'string') return d; if (d) return d.label || 'By answer';
+  const m = key.match(/^([rc])-ar-(\w+)$/); if (m) return QB_AREA[m[1]][m[2]] || '';
+  if (/riser-(sp|comb)$/.test(key)) return 'By size: ' + Object.values(QB_RISER[key.endsWith('comb') ? 'comb' : 'sp']).join(', ');
+  if (key.endsWith('riser-fcv')) return 'By size: ' + Object.values(QB_FCV).join(', ');
+  return '';
+}
+/* QuickBooks item list, loaded when QuickBooks is connected */
+var QBITEMS = null, QBIDX = null;
+const qbItem = code => (QBIDX && code) ? QBIDX.get(String(code).trim().toLowerCase()) || null : null;
 const DEFAULT_SEC_PRICE = {[SEC_ENG]:true};
 const DEFAULT_TEXTS = {
   conditions:[
@@ -758,7 +803,7 @@ const filled = v => Array.isArray(v) ? v.some(x => (x && typeof x === 'object') 
 const started = () => !!S.type && Object.values(A()).some(filled);
 const visibleQ = () => T().Q.filter(q => !q.hidden && (!q.show || q.show(A())));
 const expand = list => list.flatMap(i => i.dyn ? i.dyn(A()) : [i]);
-const customItems = () => S.custom.map(c => ({id:c.id, code:'', sec:'Custom items', name:c.name || 'Custom item', rate:n0(c.rate), custom:true, def:()=>'in'}));
+const customItems = () => S.custom.map(c => ({id:c.id, code:c.code || '', sec:'Custom items', name:c.name || 'Custom item', rate:n0(c.rate), custom:true, def:()=>'in'}));
 const secOf = it => S.secOf[it.id] ?? ((it.inSec && st(it) === 'in') ? it.inSec : it.sec);
 const secLabel = sec => S.secLabel[sec] ?? sec;
 function ordered(list){
@@ -774,8 +819,11 @@ let CFG = {res:{items:{}, extra:[]}, com:{items:{}, extra:[]}};
 const cfgKeyOf = k => (TYPES[k] && TYPES[k].cfg) || k;
 const cfg = () => CFG[cfgKeyOf(S.type)] || {items:{}, extra:[]};
 function applyCfg(it){
-  const c = (cfg().items || {})[it.cfgKey || it.id]; if (!c) return it;
+  const c = (cfg().items || {})[it.cfgKey || it.id] || {};
   const o = {...it};
+  if (!it.qbSet) { const d = QB_DEFAULTS[it.id]; o.code = d ? (typeof d === 'function' ? d(A()) : d) : ''; }
+  const qi = qbItem(c.code || o.code);
+  if (qi && qi.price > 0 && !it.zeroOk && (c.rate == null || c.rate === '')) o.rate = qi.price;
   if (c.name && !it.cfgKey) o.name = c.name;
   if (c.code != null && c.code !== '') o.code = c.code;
   if (c.rate != null && c.rate !== '') o.rate = n0(c.rate);
@@ -906,7 +954,7 @@ function row(it){
   const desc = (it.section && s === 'in') ? `<textarea class="desc" data-desc="${it.id}" placeholder="Description for the ${esc(it.name)} section">${esc(S.desc[it.id] || '')}</textarea>` : '';
   return `<li class="item s-${s}${UI.flash===it.id?' flash':''}">
     <input type="checkbox" id="c-${it.id}" data-toggle="${it.id}" ${on?'checked':''} aria-label="Include ${esc(label(it))}">
-    <div class="nm"><b>${esc(label(it))}</b>${it.code?`<code>${esc(it.code)}</code>`:''}</div>
+    <div class="nm"><b>${esc(label(it))}</b>${it.code?`<code>${esc(it.code)}</code>`:''}${QBITEMS && on && !qbItem(it.code) ? '<span class="noqb">Not in QuickBooks</span>' : ''}</div>
     <div class="calc">${calc}</div>${desc}</li>`;
 }
 function moveCtl(it){
@@ -921,7 +969,8 @@ function moveCtl(it){
 function customRow(c){
   return `<li class="item custom">
     <span class="cdot" aria-hidden="true"></span>
-    <div class="cfields"><input type="text" data-cname="${c.id}" value="${esc(c.name)}" placeholder="Description, as it shows on the proposal" aria-label="Custom item description">
+    <div class="cfields"><input type="text" list="qbList" class="ccode${c.code && QBITEMS && !qbItem(c.code) ? ' bad' : ''}" data-ccode="${c.id}" value="${esc(c.code || '')}" placeholder="QuickBooks item" aria-label="QuickBooks item">
+    <input type="text" data-cname="${c.id}" value="${esc(c.name)}" placeholder="Description, as it shows on the proposal" aria-label="Custom item description">
     <label>$<input type="number" class="rate" min="0" step="any" data-crate="${c.id}" value="${esc(c.rate)}" aria-label="Custom item price"></label>
     <button type="button" class="undo" data-cdel="${c.id}">Remove</button>${moveCtl(items().find(i => i.id === c.id))}</div></li>`;
 }
@@ -1147,7 +1196,7 @@ const DEF_OPTS = [['auto','Follows answers'],['in','Always included'],['add','Po
 let EDITOR = false, MAPEDIT = null, mapType = null;
 function mapRows(k){
   const p = k === 'res' ? 'r' : 'c';
-  return [...TYPES[k].I.filter(i => !i.dyn).map(i => ({key:i.id, code:i.code, name:i.name, rate:i.rate, unit:i.unit, sec:i.sec, rule:i.rule})), ...TEMPLATE_ROWS[k]];
+  return [...TYPES[k].I.filter(i => !i.dyn).map(i => ({key:i.id, code:mapDefCode(i.id), name:i.name, rate:i.rate, unit:i.unit, sec:i.sec, rule:i.rule})), ...TEMPLATE_ROWS[k].map(r => ({...r, code:mapDefCode(r.key)}))];
 }
 function renderMap(){
   const k = cfgKeyOf(mapType || S.type || 'com'), t = TYPES[k], conf = MAPEDIT ? MAPEDIT : (CFG[k] || {items:{}, extra:[]});
@@ -1160,14 +1209,14 @@ function renderMap(){
     const changed = Object.keys(c).some(f => c[f] !== '' && c[f] != null && c[f] !== 'auto');
     if (!editing) return `<tr${changed ? ' class="chg"' : ''}><td>${esc(code)}</td><td>${esc(cap(name))}</td><td>${esc(sec)}</td><td><span class="rule">${c.def && c.def !== 'auto' ? esc(DEF_OPTS.find(o => o[0] === c.def)[1]) : esc(r.rule)}</span></td><td>${rate ? fmt2(rate) + (r.unit ? ' per ' + r.unit : '') : ''}</td></tr>`;
     const at = f => `data-me="${esc(r.key)}" data-f="${f}"`;
-    return `<tr><td><input type="text" ${at('code')} value="${esc(code)}" aria-label="Item code"></td>
+    return `<tr><td><input type="text" list="qbList" class="${QBITEMS && c.code && !qbItem(c.code) ? 'bad' : ''}" ${at('code')} value="${esc(c.code || '')}" placeholder="${esc(code)}" aria-label="QuickBooks item"></td>
       <td>${r.template ? esc(name) : `<input type="text" ${at('name')} value="${esc(name)}" aria-label="Item name">`}<div class="rule small">${esc(r.rule)}</div></td>
       <td><input type="text" list="secList" ${at('sec')} value="${esc(sec)}" aria-label="Section"></td>
       <td>${r.template ? 'Follows answers' : defSel(at('def'), c.def)}</td>
       <td><input type="number" min="0" step="any" ${at('rate')} value="${esc(rate)}" aria-label="Price">${r.unit ? `<div class="small">per ${esc(r.unit)}</div>` : ''}</td></tr>`;
   };
   const extraHTML = x => editing
-    ? `<tr><td><input type="text" data-mx="${x.id}" data-f="code" value="${esc(x.code)}" aria-label="Item code"></td>
+    ? `<tr><td><input type="text" list="qbList" class="${QBITEMS && x.code && !qbItem(x.code) ? 'bad' : ''}" data-mx="${x.id}" data-f="code" value="${esc(x.code)}" placeholder="QuickBooks item" aria-label="QuickBooks item"></td>
       <td><input type="text" data-mx="${x.id}" data-f="name" value="${esc(x.name)}" placeholder="Item as it shows on the proposal" aria-label="Item name"><div class="small"><button type="button" class="undo" data-mxdel="${x.id}">Remove</button></div></td>
       <td><input type="text" list="secList" data-mx="${x.id}" data-f="sec" value="${esc(x.sec)}" aria-label="Section"></td>
       <td>${defSel(`data-mx="${x.id}" data-f="def"`, x.def, false)}</td>
@@ -1183,7 +1232,7 @@ function renderMap(){
       `<button type="button" data-maptype="${x}" aria-pressed="${k===x}"${editing ? ' disabled' : ''}>${esc(y.label)}</button>`).join('')}</div>${ctrl}</div>
     <datalist id="secList">${secs.map(x => `<option value="${esc(x)}">`).join('')}</datalist>
     <h3>Scope items</h3>
-    <div class="tblWrap"><table class="${editing ? 'edit' : ''}"><thead><tr><th>Item code</th><th>Scope item</th><th>Section</th><th>When it shows</th><th>Price</th></tr></thead><tbody>
+    <div class="tblWrap"><table class="${editing ? 'edit' : ''}"><thead><tr><th>QuickBooks item</th><th>Scope item</th><th>Section</th><th>When it shows</th><th>Price</th></tr></thead><tbody>
     ${mapRows(k).map(rowHTML).join('')}${(conf.extra || []).map(extraHTML).join('')}
     </tbody></table></div>
     <h3>Questions</h3>
@@ -1403,7 +1452,7 @@ document.addEventListener('click', e => {
   if (b.dataset.addc) { const it = findItem(b.dataset.addc); setState(it, st(it) === 'add' ? 'in' : 'add'); renderOut(); dirty(); return; }
   if (b.dataset.hide) { const it = findItem(b.dataset.hide); setState(it, st(it) === 'hide' ? 'out' : 'hide'); renderOut(); dirty(); return; }
   if (b.dataset.reset) { const id = b.dataset.reset; delete S.st[id]; delete S.rate[id]; delete S.qty[id]; UI.flash = id; renderOut(); dirty(); return; }
-  if (b.id === 'addCustom') { const id = 'cu-' + Date.now().toString(36); S.custom.push({id, name:'', rate:''}); renderOut(); dirty(); setTimeout(() => { const el = document.querySelector(`[data-cname="${id}"]`); if (el) el.focus(); }, 0); return; }
+  if (b.id === 'addCustom') { const id = 'cu-' + Date.now().toString(36); S.custom.push({id, code:'', name:'', rate:''}); renderOut(); dirty(); setTimeout(() => { const el = document.querySelector(`[data-cname="${id}"]`); if (el) el.focus(); }, 0); return; }
   if (b.dataset.cdel) { S.custom = S.custom.filter(c => c.id !== b.dataset.cdel); renderOut(); dirty(); return; }
   if (b.dataset.mv) { moveItem(b.dataset.mv, +b.dataset.dir); renderOut(); dirty(); return; }
   if (b.dataset.secmove) { moveSection(decS(b.dataset.secmove), +b.dataset.dir); renderOut(); dirty(); return; }
@@ -1436,6 +1485,11 @@ document.addEventListener('change', e => {
     UI.flash = id; renderOut(); dirty(); return;
   }
   if (el.dataset.secname) { renderScope(); return; }
+  if (el.dataset.ccode) {
+    const c = S.custom.find(x => x.id === el.dataset.ccode);
+    if (c) { c.code = el.value.trim(); const qi = qbItem(c.code); if (qi) { if (!String(c.name || '').trim()) c.name = qi.description || qi.name; if (c.rate === '' || c.rate == null || +c.rate === 0) c.rate = qi.price || ''; } }
+    renderOut(); dirty(); return;
+  }
   if (el.dataset.crate) { const c = S.custom.find(x => x.id === el.dataset.crate); if (c) c.rate = el.value; renderOut(); dirty(); return; }
 });
 function mapInput(el){
@@ -1903,14 +1957,14 @@ const qbErr = e => ({missing_setup:'QuickBooks keys are not set up yet in Supaba
 function qbSendBtn(){
   if (!DB || !window.QB) return '';
   const can = canReview();
-  const lbl = QB.busy ? 'Sending...' : (S.job.qbo ? 'Update QuickBooks estimate' : 'Send to QuickBooks');
+  const lbl = QB.busy ? 'Loading preview...' : (S.job.qbo ? 'Review and update QuickBooks estimate' : 'Review and send to QuickBooks');
   const why = !QB.connected ? 'QuickBooks is not connected' : !can ? 'Only managers and admins can send' : '';
   return `<button class="btn primary" id="qbSend"${(!QB.connected || !can || QB.busy) ? ` disabled title="${esc(why)}"` : ''}>${lbl}</button>`;
 }
 function qbNote(){
   let h = '';
   if (!window.QB) return h;
-  if (S.job.qbo) h += `<p class="small qbLink">QuickBooks estimate${S.job.qbo.docNumber ? ' #' + esc(S.job.qbo.docNumber) : ''} · <a href="${esc(S.job.qbo.url)}" target="_blank" rel="noopener">Open in QuickBooks</a></p>`;
+  if (S.job.qbo) h += `<p class="small qbLink">QuickBooks estimate${S.job.qbo.docNumber ? ' #' + esc(S.job.qbo.docNumber) : ''}${S.job.qbo.customer ? ' for ' + esc(S.job.qbo.customer) + (S.job.qbo.project ? ' › ' + esc(S.job.qbo.project) : '') : ''} · <a href="${esc(S.job.qbo.url)}" target="_blank" rel="noopener">Open in QuickBooks</a></p>`;
   if (QB.last && QB.last.unmatched && QB.last.unmatched.length) h += `<p class="small qbWarn">These lines didn't match a QuickBooks item and were sent as "${esc(QB.last.fallback)}": ${QB.last.unmatched.map(esc).join(', ')}. Fix the item codes in the Logic map so they match QuickBooks item names.</p>`;
   if (DB && QB.checked && !QB.connected) h += `<p class="small">${QB.needsReconnect ? 'The QuickBooks connection expired.' : 'QuickBooks is not connected.'}${roleOf() === 'admin' ? ' Connect it in the Team tab.' : ' An admin can connect it in the Team tab.'}</p>`;
   return h;
@@ -1921,24 +1975,115 @@ async function qbStatus(){
   try { const r = await fnCall('qbo', {action:'status'}); Object.assign(QB, {connected:!!r.connected, company:r.company || '', env:r.env || '', needsReconnect:!!r.needsReconnect}); }
   catch { QB.connected = false; }
   QB.checked = true;
+  if (QB.connected) await qbLoadItems();
   try { const {data} = await AUTH.sb.from('settings').select('data').eq('type', 'qbo').maybeSingle(); if (data && data.data && data.data.fallback) QB.fallback = data.data.fallback; } catch {}
   renderQB(); if (roleOf() === 'admin') renderTeam();
 }
-async function qbSend(){
+function qbPayload(){
   const t = totals(), j = S.job;
+  return {
+    estimateId:j.qbo && j.qbo.id, docNumber:j.num, txnDate:j.date, fallback:QB.fallback,
+    customer:{name:j.customer, addr1:j.addr1, addr2:j.addr2},
+    lines:t.incl.map(i => ({code:i.code || '', name:label(i), description:plain(inText(i)) || label(i), qty:qty(i), rate:rate(i)})),
+    adjustment:t.ovr ? t.total - t.base : 0,
+    memo:`Dousefire Proposal Builder${j.num ? ' #' + j.num : ''}${j.project ? ' - ' + j.project : ''}`
+  };
+}
+let QBP = null;
+async function qbSend(){
+  const j = S.job;
   if (!j.customer) { toast('Add the customer name first.'); return; }
+  if (!totals().incl.length) { toast('There are no included items to send.'); return; }
   QB.busy = true; renderQB();
   try {
-    const lines = t.incl.map(i => ({code:i.code || '', name:label(i), description:plain(inText(i)) || label(i), qty:qty(i), rate:rate(i)}));
-    const r = await fnCall('qbo', {action:'send', estimateId:j.qbo && j.qbo.id, docNumber:j.num, txnDate:j.date,
-      customer:{name:j.customer, addr1:j.addr1, addr2:j.addr2}, lines, adjustment:t.ovr ? t.total - t.base : 0, fallback:QB.fallback,
-      memo:`Dousefire Proposal Builder${j.num ? ' #' + j.num : ''}${j.project ? ' - ' + j.project : ''}`});
-    S.job.qbo = {id:r.id, docNumber:r.docNumber, url:r.url};
-    QB.last = r;
-    if (S.id) await saveDraft(true); else dirty();
-    toast(`${r.updated ? 'Updated' : 'Created'} QuickBooks estimate${r.docNumber ? ' #' + r.docNumber : ''} for ${r.customer}`);
+    const payload = qbPayload();
+    const r = await fnCall('qbo', {action:'preview', ...payload, projectName:j.addr1});
+    QBP = {r, payload, done:null, sending:false,
+      cust: r.customer ? r.customer.id : 'new',
+      projects: r.projects || [],
+      proj: r.suggestedProject ? 'p:' + r.suggestedProject : (j.addr1 ? 'new' : 'none'),
+      projName: j.addr1 || j.project || ''};
+    renderQbModal();
   } catch (e) { toast(qbErr(e) + (e.detail && e.message === 'qbo_error' ? ': ' + e.detail : '')); }
   QB.busy = false; renderQB();
+}
+function renderQbModal(){
+  const m = $('#qbModal'); if (!m) return;
+  if (!QBP) { m.hidden = true; m.innerHTML = ''; return; }
+  m.hidden = false;
+  const {r, payload, done} = QBP, j = S.job, t = totals();
+  if (done) {
+    m.innerHTML = `<div class="authCard qbCard"><div class="authTop"><h2>Sent to QuickBooks</h2><button type="button" class="linkbtn" id="qbClose">Close</button></div>
+      <p><b>Estimate${done.docNumber ? ' #' + esc(done.docNumber) : ''}</b> ${done.updated ? 'updated' : 'created'} for <b>${esc(done.customer)}</b>${done.project ? ` › <b>${esc(done.project)}</b>${done.projectCreated ? ' (new)' : ''}` : ''}.</p>
+      <p>Total in QuickBooks: <b>${fmt2(done.total)}</b></p>
+      ${done.unmatched && done.unmatched.length ? `<p class="qbWarn">Sent as "${esc(done.fallback)}" because they're not in QuickBooks: ${done.unmatched.map(esc).join(', ')}</p>` : ''}
+      <div class="bar"><a class="btn primary" href="${esc(done.url)}" target="_blank" rel="noopener">Open in QuickBooks</a><button type="button" class="btn" id="qbClose2">Done</button></div></div>`;
+    return;
+  }
+  const custOpts = [];
+  if (r.customer) custOpts.push([r.customer.id, `${r.customer.name}${r.customer.address ? ' · ' + r.customer.address : ''} (existing)`]);
+  (r.candidates || []).filter(c => !r.customer || c.id !== r.customer.id).forEach(c => custOpts.push([c.id, `${c.name}${c.address ? ' · ' + c.address : ''} (existing)`]));
+  custOpts.push(['new', `Create new customer: ${j.customer}`]);
+  const projOpts = (QBP.cust === 'new' ? [] : QBP.projects).map(p => ['p:' + p.id, `${p.name}${p.isProject ? '' : ' (sub-customer)'} (existing)`]);
+  projOpts.push(['new', 'Create new project'], ['none', 'No project (estimate goes to the customer)']);
+  const sel = (id, opts, cur) => `<select id="${id}">${opts.map(([v, l]) => `<option value="${esc(v)}"${v === cur ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
+  const rows = payload.lines.map((l, i) => { const x = r.lines[i] || {}; return `<tr${x.found ? '' : ' class="miss"'}><td>${esc(x.found ? x.itemName : (l.code || '-'))}${x.found ? '' : `<div class="small">Not in QuickBooks. Sent as "${esc(x.itemName || QB.fallback)}"</div>`}</td><td class="d">${esc(l.description)}</td><td class="r">${l.qty}</td><td class="r">${fmt2(l.rate)}</td><td class="r">${fmt2(l.qty * l.rate)}</td></tr>`; }).join('');
+  const adj = payload.adjustment ? `<tr><td></td><td class="d">Price adjustment</td><td class="r">1</td><td class="r">${fmt2(payload.adjustment)}</td><td class="r">${fmt2(payload.adjustment)}</td></tr>` : '';
+  const missing = r.lines.filter(x => !x.found).length;
+  m.innerHTML = `<div class="authCard qbCard"><div class="authTop"><h2>Review before sending to QuickBooks</h2><button type="button" class="linkbtn" id="qbClose">Cancel</button></div>
+    <p class="small">Company: <b>${esc(r.company || 'QuickBooks')}</b>${r.env === 'sandbox' ? ' (sandbox test company)' : ''}</p>
+    <div class="qbGrid">
+      <label class="mini">Customer${sel('qbCust', custOpts, QBP.cust)}</label>
+      <label class="mini">Project${sel('qbProj', projOpts, QBP.proj)}</label>
+      ${QBP.proj === 'new' ? `<label class="mini">New project name<input type="text" id="qbProjName" value="${esc(QBP.projName)}" placeholder="e.g. 140 State St"></label>` : '<span></span>'}
+      <div class="mini">Ship to<span class="qbVal">${esc([j.addr1, j.addr2].filter(Boolean).join(', ') || 'No address')}</span></div>
+      <div class="mini">Estimate<span class="qbVal">${r.estimate ? `Updates estimate #${esc(r.estimate.docNumber || r.estimate.id)}` : `New estimate${j.num ? ' #' + esc(j.num) : ''}`} · ${esc(dateLong(j.date) || 'today')}</span></div>
+    </div>
+    ${missing ? `<p class="qbWarn">${missing} line${missing > 1 ? 's are' : ' is'} not in QuickBooks and will be sent as "${esc(r.fallback || QB.fallback)}". Fix the QuickBooks item in Scope review or the Logic map.</p>` : '<p class="good">Every line matches a QuickBooks item.</p>'}
+    <div class="tbl"><table class="qb"><thead><tr><th>QuickBooks item</th><th>Description</th><th class="r">Qty</th><th class="r">Rate</th><th class="r">Amount</th></tr></thead>
+      <tbody>${rows}${adj}</tbody><tfoot><tr><td></td><td>Estimate total</td><td></td><td></td><td class="r">${fmt2(t.total)}</td></tr></tfoot></table></div>
+    <div class="bar"><button type="button" class="btn primary" id="qbConfirm"${QBP.sending ? ' disabled' : ''}>${QBP.sending ? 'Sending...' : (r.estimate ? 'Update estimate in QuickBooks' : 'Create estimate in QuickBooks')}</button><button type="button" class="btn" id="qbClose2">Cancel</button></div></div>`;
+}
+async function qbConfirm(){
+  if (!QBP || QBP.sending) return;
+  const nameEl = $('#qbProjName'); if (nameEl) QBP.projName = nameEl.value.trim();
+  if (QBP.proj === 'new' && !QBP.projName) { toast('Enter a name for the new project.'); return; }
+  QBP.sending = true; renderQbModal();
+  try {
+    const p = QBP.proj.startsWith('p:') ? {mode:'existing', id:QBP.proj.slice(2), name:(QBP.projects.find(x => 'p:' + x.id === QBP.proj) || {}).name} : QBP.proj === 'new' ? {mode:'new', name:QBP.projName} : {mode:'none'};
+    const r = await fnCall('qbo', {action:'send', ...QBP.payload, customerId:QBP.cust === 'new' ? '' : QBP.cust, project:p});
+    S.job.qbo = {id:r.id, docNumber:r.docNumber, url:r.url, customer:r.customer, project:r.project};
+    QB.last = r; QBP.done = r;
+    if (S.id) await saveDraft(true); else dirty();
+  } catch (e) { toast(qbErr(e) + (e.detail && e.message === 'qbo_error' ? ': ' + e.detail : '')); }
+  if (QBP) QBP.sending = false;
+  renderQbModal(); renderQB();
+}
+document.addEventListener('click', e => {
+  if (e.target.closest('#qbClose') || e.target.closest('#qbClose2')) { QBP = null; renderQbModal(); return; }
+  if (e.target.closest('#qbConfirm')) qbConfirm();
+});
+document.addEventListener('change', async e => {
+  if (!QBP) return;
+  if (e.target.id === 'qbProjName') { QBP.projName = e.target.value; return; }
+  if (e.target.id === 'qbProj') { QBP.proj = e.target.value; renderQbModal(); return; }
+  if (e.target.id === 'qbCust') {
+    QBP.cust = e.target.value; QBP.projects = [];
+    if (QBP.cust !== 'new') { try { QBP.projects = (await fnCall('qbo', {action:'projects', customerId:QBP.cust})).projects || []; } catch {} }
+    const want = String(S.job.addr1 || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const hit = QBP.projects.find(p => p.name.toLowerCase().replace(/[^a-z0-9]/g, '') === want);
+    QBP.proj = hit ? 'p:' + hit.id : (S.job.addr1 ? 'new' : 'none');
+    renderQbModal();
+  }
+});
+async function qbLoadItems(){
+  try {
+    const r = await fnCall('qbo', {action:'items'});
+    QBITEMS = r.items || []; QBIDX = new Map();
+    QBITEMS.forEach(i => [i.name, i.sku].forEach(k => { if (k && !QBIDX.has(k.toLowerCase())) QBIDX.set(k.toLowerCase(), i); }));
+    const dl = $('#qbList'); if (dl) dl.innerHTML = QBITEMS.map(i => `<option value="${esc(i.name)}">${esc(i.description || '')}${i.price ? ' · ' + fmt2(i.price) : ''}</option>`).join('');
+    renderOut(); renderMap();
+  } catch { QBITEMS = null; QBIDX = null; }
 }
 function qbPanelHTML(){
   return `<div class="panel" style="margin-top:16px"><h2>QuickBooks</h2>
