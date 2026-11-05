@@ -1,0 +1,283 @@
+// Supabase Edge Function: qbo
+// Connects Dousefire's QuickBooks Online company and creates or updates estimates from the Proposal Builder.
+// Secrets used: QBO_CLIENT_ID, QBO_CLIENT_SECRET, optional QBO_ENV (sandbox | production), optional APP_URL.
+// Leave "Verify JWT" ON for this function.
+import { createClient } from "npm:@supabase/supabase-js@2.45.4";
+
+const ENV = (Deno.env.get("QBO_ENV") || "sandbox").toLowerCase() === "production" ? "production" : "sandbox";
+const API = ENV === "production" ? "https://quickbooks.api.intuit.com" : "https://sandbox-quickbooks.api.intuit.com";
+const WEB = ENV === "production" ? "https://app.qbo.intuit.com" : "https://app.sandbox.qbo.intuit.com";
+const MINOR = "75";
+const REDIRECT = Deno.env.get("QBO_REDIRECT_URI") || `${Deno.env.get("SUPABASE_URL")}/functions/v1/qbo-callback`;
+const DISCOVERY = ENV === "production"
+  ? "https://developer.api.intuit.com/.well-known/openid_configuration"
+  : "https://developer.api.intuit.com/.well-known/openid_sandbox_configuration";
+
+const cors = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+const json = (b: unknown, status = 200) =>
+  new Response(JSON.stringify(b), { status, headers: { ...cors, "Content-Type": "application/json" } });
+class Fail extends Error { constructor(public code: string, public detail = "") { super(code); } }
+
+let EP: { auth: string; token: string; revoke: string } | null = null;
+async function endpoints() {
+  if (EP) return EP;
+  try {
+    const r = await fetch(DISCOVERY);
+    if (r.ok) { const d = await r.json(); EP = { auth: d.authorization_endpoint, token: d.token_endpoint, revoke: d.revocation_endpoint }; return EP; }
+  } catch { /* fall back */ }
+  EP = { auth: "https://appcenter.intuit.com/connect/oauth2", token: "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer", revoke: "https://developer.api.intuit.com/v2/oauth2/tokens/revoke" };
+  return EP;
+}
+const basic = () => btoa(`${Deno.env.get("QBO_CLIENT_ID")}:${Deno.env.get("QBO_CLIENT_SECRET")}`);
+const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+
+async function connection() {
+  const { data } = await admin.from("qbo_connection").select("*").eq("id", 1).maybeSingle();
+  if (!data) throw new Fail("not_connected");
+  return data;
+}
+// Refresh the access token only when it has expired (or is about to)
+async function accessToken(force = false) {
+  const c = await connection();
+  if (!force && new Date(c.expires_at).getTime() > Date.now() + 60_000) return c;
+  const r = await fetch((await endpoints()).token, {
+    method: "POST",
+    headers: { Authorization: `Basic ${basic()}`, Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: c.refresh_token }),
+  });
+  const t = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    console.error("Refresh failed", r.status, r.headers.get("intuit_tid"), JSON.stringify(t));
+    if (t.error === "invalid_grant") throw new Fail("reconnect");
+    throw new Fail("qbo_auth_error");
+  }
+  const now = Date.now();
+  const upd = {
+    access_token: t.access_token, refresh_token: t.refresh_token || c.refresh_token,
+    expires_at: new Date(now + (t.expires_in || 3600) * 1000).toISOString(),
+    refresh_expires_at: t.x_refresh_token_expires_in ? new Date(now + t.x_refresh_token_expires_in * 1000).toISOString() : c.refresh_expires_at,
+    updated_at: new Date().toISOString(),
+  };
+  await admin.from("qbo_connection").update(upd).eq("id", 1);
+  return { ...c, ...upd };
+}
+// Call the QuickBooks Accounting API, refreshing and retrying once on an auth error
+async function qbo(path: string, init: RequestInit = {}, retried = false): Promise<any> {
+  const c = await accessToken(retried);
+  const sep = path.includes("?") ? "&" : "?";
+  const r = await fetch(`${API}/v3/company/${c.realm_id}${path}${sep}minorversion=${MINOR}`, {
+    ...init, headers: { Authorization: `Bearer ${c.access_token}`, Accept: "application/json", "Content-Type": "application/json", ...(init.headers || {}) },
+  });
+  if (r.status === 401 && !retried) return qbo(path, init, true);
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const msg = d?.Fault?.Error?.map((e: any) => `${e.Message}: ${e.Detail}`).join("; ") || String(r.status);
+    console.error("QBO API error", path, r.status, "intuit_tid", r.headers.get("intuit_tid"), msg);
+    throw new Fail("qbo_error", msg);
+  }
+  return d;
+}
+const q = (s: string) => qbo(`/query?query=${encodeURIComponent(s)}`);
+const esc = (s: string) => String(s).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+const r2 = (n: number) => Math.round(n * 100) / 100;
+
+function splitCity(s = "") {
+  const m = String(s).match(/^\s*(.*?),\s*([A-Za-z]{2})\s+(\d{5}(?:-\d{4})?)/);
+  return m ? { City: m[1], CountrySubDivisionCode: m[2].toUpperCase(), PostalCode: m[3] } : (s ? { City: s } : {});
+}
+async function allItems() {
+  const out: any[] = [];
+  for (let start = 1; start < 10000; start += 1000) {
+    const d = await q(`select Id, Name, FullyQualifiedName, Sku, Active from Item startposition ${start} maxresults 1000`);
+    const items = d?.QueryResponse?.Item || [];
+    out.push(...items);
+    if (items.length < 1000) break;
+  }
+  return out;
+}
+const custAddr = (c: any) => {
+  const a = c?.ShipAddr || c?.BillAddr; if (!a) return "";
+  return [a.Line1, [a.City, [a.CountrySubDivisionCode, a.PostalCode].filter(Boolean).join(" ")].filter(Boolean).join(", ")].filter(Boolean).join(", ");
+};
+async function findCustomers(name: string) {
+  name = String(name || "").trim();
+  if (!name) return { exact: null, candidates: [] };
+  const ex = await q(`select * from Customer where DisplayName = '${esc(name)}'`);
+  const exact = (ex?.QueryResponse?.Customer || []).find((c: any) => !c.Job) || ex?.QueryResponse?.Customer?.[0] || null;
+  const word = name.split(/[\s,]+/).find((w) => w.length > 2) || name;
+  const like = await q(`select * from Customer where DisplayName like '%${esc(word)}%' maxresults 25`);
+  const candidates = (like?.QueryResponse?.Customer || []).filter((c: any) => !c.Job && c.Active !== false)
+    .map((c: any) => ({ id: c.Id, name: c.DisplayName, address: custAddr(c) }));
+  return { exact: exact ? { id: exact.Id, name: exact.DisplayName, address: custAddr(exact) } : null, candidates };
+}
+async function projectsOf(customerId: string) {
+  if (!customerId) return [];
+  const out: any[] = [];
+  for (let start = 1; start < 5000; start += 1000) {
+    const d = await q(`select * from Customer where Job = true startposition ${start} maxresults 1000`);
+    const rows = d?.QueryResponse?.Customer || [];
+    out.push(...rows);
+    if (rows.length < 1000) break;
+  }
+  return out.filter((c: any) => c.ParentRef?.value === String(customerId) && c.Active !== false)
+    .map((c: any) => ({ id: c.Id, name: c.DisplayName, isProject: !!c.IsProject, address: custAddr(c) }));
+}
+const norm = (s: string) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+async function createCustomer(name: string, addr1?: string, addr2?: string, parentId?: string) {
+  const addr = { Line1: addr1 || undefined, ...splitCity(addr2) };
+  const base: any = { DisplayName: name.slice(0, 100), BillAddr: addr, ShipAddr: addr };
+  if (parentId) Object.assign(base, { Job: true, ParentRef: { value: parentId }, BillWithParent: true });
+  else base.CompanyName = name.slice(0, 100);
+  try { return (await qbo("/customer", { method: "POST", body: JSON.stringify(base) })).Customer; }
+  catch (e) {
+    // Display names must be unique in QuickBooks. Add the parent name if this one is taken.
+    if (parentId && e instanceof Fail && /duplicate|already/i.test(e.detail)) {
+      const p = await qbo(`/customer/${parentId}`);
+      base.DisplayName = `${name} (${p.Customer.DisplayName})`.slice(0, 100);
+      return (await qbo("/customer", { method: "POST", body: JSON.stringify(base) })).Customer;
+    }
+    throw e;
+  }
+}
+function itemIndex(items: any[]) {
+  const key = (s: string) => String(s || "").trim().toLowerCase();
+  const byKey = new Map<string, any>();
+  for (const it of items) { if (it.Active === false) continue; [it.Name, it.FullyQualifiedName, it.Sku].forEach((k) => k && !byKey.has(key(k)) && byKey.set(key(k), it)); }
+  return (code: string) => (code ? byKey.get(key(code)) : null) || null;
+}
+
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
+  try {
+    if (!Deno.env.get("QBO_CLIENT_ID") || !Deno.env.get("QBO_CLIENT_SECRET")) return json({ error: "missing_setup" }, 500);
+    const user = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_ANON_KEY")!, {
+      global: { headers: { Authorization: req.headers.get("Authorization") || "" } },
+    });
+    const can = async (fn: string) => { const { data } = await user.rpc(fn); return !!data; };
+    if (!(await can("is_team"))) return json({ error: "not_on_team" }, 403);
+    const { data: { user: me } } = await user.auth.getUser();
+    const body = await req.json();
+
+    if (body.action === "status") {
+      const { data: c } = await admin.from("qbo_connection").select("realm_id, env, connected_by, updated_at").eq("id", 1).maybeSingle();
+      if (!c) return json({ connected: false, env: ENV });
+      let company = "";
+      try { const d = await qbo(`/companyinfo/${c.realm_id}`); company = d?.CompanyInfo?.CompanyName || ""; }
+      catch (e) { if (e instanceof Fail && e.code === "reconnect") return json({ connected: false, needsReconnect: true, env: ENV }); }
+      return json({ connected: true, env: c.env, company, connectedBy: c.connected_by });
+    }
+
+    if (body.action === "connect_url") {
+      if (!(await can("is_admin"))) return json({ error: "admins_only" }, 403);
+      const state = crypto.randomUUID();
+      await admin.from("qbo_oauth_state").insert({ state, created_by: me?.email || "" });
+      const ep = await endpoints();
+      const url = `${ep.auth}?` + new URLSearchParams({ client_id: Deno.env.get("QBO_CLIENT_ID")!, response_type: "code", scope: "com.intuit.quickbooks.accounting", redirect_uri: REDIRECT, state });
+      return json({ url });
+    }
+
+    if (body.action === "disconnect") {
+      if (!(await can("is_admin"))) return json({ error: "admins_only" }, 403);
+      const { data: c } = await admin.from("qbo_connection").select("refresh_token").eq("id", 1).maybeSingle();
+      if (c) {
+        try {
+          await fetch((await endpoints()).revoke, { method: "POST", headers: { Authorization: `Basic ${basic()}`, Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ token: c.refresh_token }) });
+        } catch { /* still remove locally */ }
+        await admin.from("qbo_connection").delete().eq("id", 1);
+      }
+      return json({ ok: true });
+    }
+
+    if (body.action === "items") {
+      const items = await allItems();
+      return json({ items: items.filter((i: any) => i.Active !== false).map((i: any) => ({ id: i.Id, name: i.Name, sku: i.Sku || "", type: i.Type || "", description: i.Description || "", price: Number(i.UnitPrice) || 0 })) });
+    }
+
+    if (body.action === "projects") {
+      return json({ projects: await projectsOf(String(body.customerId || "")) });
+    }
+
+    if (body.action === "preview") {
+      const c = body.customer || {};
+      const cust = await findCustomers(c.name);
+      const projects = cust.exact ? await projectsOf(cust.exact.id) : [];
+      const want = norm(body.projectName || c.addr1);
+      const suggested = projects.find((p: any) => norm(p.name) === want) || projects.find((p: any) => want && (norm(p.name).includes(want) || want.includes(norm(p.name)))) || null;
+      const find = itemIndex(await allItems());
+      const fb = find(body.fallback || "Services");
+      const lines = (Array.isArray(body.lines) ? body.lines : []).map((l: any) => { const it = find(l.code); return { code: l.code || "", found: !!it, itemName: it ? it.Name : (fb ? fb.Name : "") }; });
+      let estimate = null;
+      if (body.estimateId) { try { const e = await qbo(`/estimate/${encodeURIComponent(body.estimateId)}`); estimate = { id: e.Estimate.Id, docNumber: e.Estimate.DocNumber || "", customer: e.Estimate.CustomerRef?.name || "" }; } catch { estimate = null; } }
+      let company = "";
+      try { const c2 = await connection(); const d = await qbo(`/companyinfo/${c2.realm_id}`); company = d?.CompanyInfo?.CompanyName || ""; } catch { /* optional */ }
+      return json({ company, env: ENV, customer: cust.exact, candidates: cust.candidates, projects, suggestedProject: suggested ? suggested.id : null, lines, fallback: fb ? fb.Name : null, estimate });
+    }
+
+    if (body.action === "send") {
+      if (!(await can("can_delete"))) return json({ error: "managers_only" }, 403);
+      const lines = (Array.isArray(body.lines) ? body.lines : []).filter((l: any) => Number(l.qty) && l.description);
+      if (!lines.length) return json({ error: "no_lines" }, 400);
+
+      const find = itemIndex(await allItems());
+      const fallback = find(body.fallback || "Services");
+      const unmatched: string[] = [];
+      const Line: any[] = [];
+      for (const l of lines) {
+        let it = find(l.code);
+        if (!it) { if (!fallback) return json({ error: "no_fallback_item", detail: body.fallback || "Services" }, 400); it = fallback; unmatched.push(l.code ? `${l.code} (${l.name || l.description})` : (l.name || l.description)); }
+        const qty = Number(l.qty) || 1, rate = Number(l.rate) || 0;
+        Line.push({ DetailType: "SalesItemLineDetail", Amount: r2(qty * rate), Description: String(l.description).slice(0, 4000),
+          SalesItemLineDetail: { ItemRef: { value: it.Id, name: it.Name }, Qty: qty, UnitPrice: rate } });
+      }
+      const adj = r2(Number(body.adjustment) || 0);
+      if (adj > 0) { if (!fallback) return json({ error: "no_fallback_item" }, 400); Line.push({ DetailType: "SalesItemLineDetail", Amount: adj, Description: "Price adjustment", SalesItemLineDetail: { ItemRef: { value: fallback.Id, name: fallback.Name }, Qty: 1, UnitPrice: adj } }); }
+      if (adj < 0) Line.push({ DetailType: "DiscountLineDetail", Amount: -adj, Description: "Price adjustment", DiscountLineDetail: { PercentBased: false } });
+
+      const c = body.customer || {};
+      // Customer: the one picked in the preview, or a new one
+      let customerId = body.customerId ? String(body.customerId) : "";
+      let customerName = c.name;
+      if (!customerId) {
+        const found = await findCustomers(c.name);
+        if (found.exact) { customerId = found.exact.id; customerName = found.exact.name; }
+        else { const made = await createCustomer(String(c.name || "").trim(), c.addr1, c.addr2); if (!made) throw new Fail("no_customer"); customerId = made.Id; customerName = made.DisplayName; }
+      }
+      // Project (sub-customer under the customer): existing, new, or none
+      const p = body.project || { mode: "none" };
+      let refId = customerId, projectName = "", projectCreated = false;
+      if (p.mode === "existing" && p.id) { refId = String(p.id); projectName = p.name || ""; }
+      if (p.mode === "new" && String(p.name || "").trim()) {
+        const made = await createCustomer(String(p.name).trim(), c.addr1, c.addr2, customerId);
+        refId = made.Id; projectName = made.DisplayName; projectCreated = true;
+      }
+
+      const ship = { Line1: c.addr1 || undefined, ...splitCity(c.addr2) };
+      const est: any = {
+        CustomerRef: { value: refId }, Line, ShipAddr: ship,
+        DocNumber: body.docNumber ? String(body.docNumber).slice(0, 21) : undefined,
+        TxnDate: body.txnDate || undefined,
+        PrivateNote: String(body.memo || "Created by the Dousefire Proposal Builder").slice(0, 4000),
+      };
+      let saved: any = null;
+      if (body.estimateId) {
+        try {
+          const cur = await qbo(`/estimate/${encodeURIComponent(body.estimateId)}`);
+          saved = (await qbo("/estimate", { method: "POST", body: JSON.stringify({ ...est, Id: cur.Estimate.Id, SyncToken: cur.Estimate.SyncToken, sparse: false }) })).Estimate;
+        } catch (e) { if (!(e instanceof Fail && e.code === "qbo_error")) throw e; saved = null; }
+      }
+      if (!saved) saved = (await qbo("/estimate", { method: "POST", body: JSON.stringify(est) })).Estimate;
+      return json({ id: saved.Id, docNumber: saved.DocNumber || "", total: saved.TotalAmt, url: `${WEB}/app/estimate?txnId=${saved.Id}`,
+        customer: customerName, project: projectName, projectCreated, unmatched, fallback: fallback ? fallback.Name : "", updated: !!body.estimateId });
+    }
+
+    return json({ error: "bad_request" }, 400);
+  } catch (e) {
+    if (e instanceof Fail) return json({ error: e.code, detail: e.detail }, e.code === "not_connected" || e.code === "reconnect" ? 409 : 502);
+    console.error("qbo function error", String(e));
+    return json({ error: "server_error", detail: String(e) }, 500);
+  }
+});
