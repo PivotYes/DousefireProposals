@@ -33,7 +33,8 @@ html{height:100%;scroll-padding-top:env(safe-area-inset-top,0px)}
 body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 var(--ui)}
 button,input,textarea{font:inherit;color:inherit}
 :focus-visible{outline:2px solid var(--sky);outline-offset:2px}
-.top{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:10px 24px;background:var(--surface);border-bottom:1px solid var(--line)}
+.top{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:10px 24px;background:var(--surface);border-bottom:1px solid var(--line);position:sticky;top:env(safe-area-inset-top,0px);z-index:12}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:13;background:var(--surface)}
 .brand{display:flex;align-items:center;gap:12px;margin-right:auto}
 .brand img{height:40px;width:auto;border-radius:6px;background:#fff}
 .brand h1{font-size:17px;margin:0;font-weight:700}
@@ -120,7 +121,7 @@ table.qb .r{text-align:right}
 table.qb tfoot td{font-weight:700;border-bottom:0}
 .qbBar{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
 .side{min-width:0;display:flex;flex-direction:column;gap:12px}
-@media (min-width:1051px){.side{position:sticky;top:calc(env(safe-area-inset-top,0px) + 12px);align-self:start;max-height:calc(100vh - 24px)}}
+@media (min-width:1051px){.side{position:sticky;top:calc(env(safe-area-inset-top,0px) + var(--topH,0px) + 12px);align-self:start;max-height:calc(100vh - var(--topH,0px) - 24px)}}
 .checks{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 16px}
 .checks h3{margin:0 0 4px;font-size:14px}
 .stats{display:flex;gap:14px;flex-wrap:wrap;font-size:13px;color:var(--muted);margin-bottom:6px}
@@ -193,6 +194,8 @@ body.editing .page [contenteditable="true"]{outline:2px dashed #E0A000;outline-o
   .draftBar .status{min-width:0;flex:1 1 auto;text-align:left}
   .auth{flex:1 1 100%;flex-wrap:wrap}.auth .who{max-width:none;flex:1 1 auto}
   .signin input{width:100%}
+  body.scrolled .top .tabs,body.scrolled .top .auth,body.scrolled .top .brand h1{display:none}
+  body.scrolled .top{padding-block:6px}
 }
 .stepNav .sn-prev{display:none}
 @media (max-width:1050px){.stepNav .sn-prev{display:inline-block;border-color:var(--navy);color:var(--navy)}}
@@ -307,6 +310,7 @@ table.team input,table.team select{width:100%;min-width:120px;padding:6px 8px}
 .cuBox{margin-bottom:14px}
 .cuFind{display:flex;gap:8px}
 .cuFind input{flex:1}
+.cuHint{margin:6px 0 0}
 .cuRes{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:4px;max-height:220px;overflow:auto}
 .cuLinked{display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:var(--sky-soft);border-radius:10px;padding:8px 12px;font-size:14px}
 .cuLinked a{font-weight:600;color:inherit}
@@ -324,7 +328,7 @@ input.bad{border-color:var(--danger)!important}
 .qbVal{font-weight:500;color:var(--ink);font-size:14px}
 table.qb tr.miss td{background:var(--warn-soft)}
 a.btn{text-decoration:none;display:inline-block}
-.stepNav{position:sticky;top:0;z-index:6;display:flex;flex-wrap:wrap;gap:6px;align-items:center;background:var(--bg);padding:10px 0;margin:-10px 0 -6px;scrollbar-width:none}
+.stepNav{position:sticky;top:calc(env(safe-area-inset-top,0px) + var(--topH,0px));z-index:6;display:flex;flex-wrap:wrap;gap:6px;align-items:center;background:var(--bg);padding:10px 0;margin:-10px 0 -6px;scrollbar-width:none}
 .stepNav::-webkit-scrollbar{display:none}
 .stepNav button{flex:0 0 auto;border:1px solid var(--line);background:var(--surface);color:var(--muted);border-radius:999px;padding:4px 10px;font-size:12.5px;font-weight:600;cursor:pointer;white-space:nowrap}
 .stepNav button:hover{border-color:var(--muted);color:var(--ink)}
@@ -1396,7 +1400,6 @@ function watchCfg(){
 /* ---------- Drafts and proposal numbers (shared database) ---------- */
 let DB = null, DRAFTS = [], DRAFT_ERR = '', confirmDel = null, dbReady = false;
 const HOLDER = 'tab-' + Math.random().toString(36).slice(2);
-const nextNum = () => String(Math.max(1000, ...DRAFTS.map(d => parseInt(d.num, 10) || 0)) + 1);
 /* Proposal numbers are only handed out by the database when a draft is saved, so two people can never get the same one. */
 function autoNum(){}
 const normNum = n => String(n || '').trim().replace(/^#/, '').toLowerCase();
@@ -1841,6 +1844,13 @@ function cleanPagesHTML(html, imgSrc){
   walk(t.content);
   return t.innerHTML;
 }
+/* ---------- Pinned top bar: other sticky parts sit below it ---------- */
+const topBar = $('.top');
+const topH = () => topBar.offsetHeight;
+new ResizeObserver(() => document.documentElement.style.setProperty('--topH', topH() + 'px')).observe(topBar);
+document.documentElement.style.setProperty('--topH', topH() + 'px');
+window.addEventListener('scroll', () => document.body.classList.toggle('scrolled', window.scrollY > 120), {passive:true});
+
 /* ---------- Builder steps: small step menu and collapsible steps ---------- */
 (function stepMenu(){
   const builder = $('.builder'), steps = [...builder.querySelectorAll(':scope > .step')];
@@ -1858,14 +1868,14 @@ function cleanPagesHTML(html, imgSrc){
     head.addEventListener('click', e => { if (e.target.closest('a,input,select,textarea') ) return; set(!st.classList.contains('collapsed')); });
     const b = document.createElement('button'); b.type = 'button'; b.dataset.step = st.id;
     b.innerHTML = `<span class="sn-n">${esc(num)}</span>${esc(({'Describe the project':'Describe', 'Project questions':'Questions', 'Scope review':'Scope', 'Price and terms':'Price', 'QuickBooks estimate':'QuickBooks'})[title] || title)}`;
-    b.addEventListener('click', () => { set(false); window.scrollTo({top: st.getBoundingClientRect().top + window.scrollY - nav.offsetHeight - 6, behavior:'smooth'}); });
+    b.addEventListener('click', () => { set(false); window.scrollTo({top: st.getBoundingClientRect().top + window.scrollY - nav.offsetHeight - topH() - 6, behavior:'smooth'}); });
     nav.appendChild(b);
   });
   const all = document.createElement('button'); all.type = 'button'; all.className = 'sn-all';
   const allLabel = () => { all.textContent = steps.every(x => x.classList.contains('collapsed')) ? 'Expand all' : 'Collapse all'; };
   all.addEventListener('click', () => { const close = !steps.every(x => x.classList.contains('collapsed')); steps.forEach(x => x._set(close, true)); save(); allLabel(); });
   const prev = document.createElement('button'); prev.type = 'button'; prev.className = 'sn-prev'; prev.textContent = 'Proposal \u2193';
-  prev.addEventListener('click', () => { const t = $('.side'); window.scrollTo({top: t.getBoundingClientRect().top + window.scrollY - 8, behavior:'smooth'}); });
+  prev.addEventListener('click', () => { const t = $('.side'); window.scrollTo({top: t.getBoundingClientRect().top + window.scrollY - topH() - 8, behavior:'smooth'}); });
   nav.appendChild(prev);
   nav.appendChild(all); allLabel();
   builder.addEventListener('click', e => { if (e.target.closest('.stepToggle, .step > header')) setTimeout(allLabel, 0); });
@@ -2473,7 +2483,7 @@ renderChat();
 
 
 /* ---------- ClickUp: pull job details, save proposals to the job ---------- */
-const CU = {map:null, fields:[], results:null, busy:false};
+const CU = {map:null, fields:[], results:null, busy:false, jobs:null, jobsAt:0, jobsLoading:null};
 /* Job statuses to search in the ClickUp Proposal list */
 const CU_STATUSES = ['open', 'in progress'];
 /* ClickUp values can come back as text with a link, a list of related tasks, or a location object. Keep only the readable name. */
@@ -2561,9 +2571,31 @@ function renderCu(){
   if (!DB) { box.innerHTML = '<p class="small">Sign in to link a ClickUp job.</p>'; return; }
   if (j) { box.innerHTML = `<div class="cuLinked"><span>Linked to ClickUp: ${safeUrl(j.url) ? `<a href="${esc(safeUrl(j.url))}" target="_blank" rel="noopener">${esc(j.name)}</a>` : esc(j.name)}</span>
       <button type="button" class="btn sm" id="cuRefresh"${CU.busy ? ' disabled' : ''}>Refresh details</button><button type="button" class="linkbtn" id="cuUnlink">Unlink</button></div>`; return; }
-  box.innerHTML = `<div class="cuFind"><input type="text" id="cuQ" placeholder="ClickUp job name, task ID, or link" aria-label="ClickUp job"><button type="button" class="btn" id="cuFind"${CU.busy ? ' disabled' : ''}>${CU.busy ? 'Looking...' : 'Find in ClickUp'}</button></div>
-    ${CU.results ? (CU.results.length ? `<ul class="cuRes">${CU.results.map(t => `<li><button type="button" class="linkbtn" data-cupick="${esc(t.id)}">${esc(t.name)}</button> <span class="small">${esc(t.status)}</span></li>`).join('')}</ul>` : '<p class="small">No jobs in the Proposals list match that name.</p>') : ''}`;
+  /* Keep the search box itself (and the cursor in it); only redraw the button and the results */
+  if (!$('#cuQ')) box.innerHTML = `<div class="cuFind"><input type="text" id="cuQ" placeholder="Type a ClickUp job name, or paste a task link" aria-label="ClickUp job" autocomplete="off"><button type="button" class="btn" id="cuFind"></button></div><div id="cuResWrap"></div>`;
+  const btn = $('#cuFind'); btn.disabled = !!CU.busy; btn.textContent = CU.busy ? 'Looking...' : 'Find in ClickUp';
+  const hint = CU.jobs ? `<p class="small cuHint">${CU.jobs.length} open and in-progress job${CU.jobs.length === 1 ? '' : 's'} loaded. Results show as you type.</p>` : (CU.jobsLoading ? '<p class="small cuHint">Loading ClickUp jobs...</p>' : '');
+  $('#cuResWrap').innerHTML = CU.results ? (CU.results.length ? `<ul class="cuRes">${CU.results.map(t => `<li><button type="button" class="linkbtn" data-cupick="${esc(t.id)}">${esc(t.name)}</button> <span class="small">${esc(t.status)}</span></li>`).join('')}</ul>` : '<p class="small">No open or in-progress jobs in the Proposals list match that.</p>') : hint;
 }
+/* All Open and In Progress jobs, loaded once and reused for 3 minutes */
+function cuJobs(force){
+  if (!force && CU.jobs && Date.now() - CU.jobsAt < 180000) return Promise.resolve(CU.jobs);
+  if (CU.jobsLoading) return CU.jobsLoading;
+  CU.jobsLoading = cuCall({action:'list', statuses:CU_STATUSES})
+    .then(r => { CU.jobs = (r.tasks || []).map(t => ({id:String(t.id), name:String(t.name || ''), status:String(t.status || ''), low:String(t.name || '').toLowerCase()})); CU.jobsAt = Date.now(); return CU.jobs; })
+    .finally(() => { CU.jobsLoading = null; if (!$('#cuQ') || !CU.results) renderCu(); });
+  renderCu();
+  return CU.jobsLoading;
+}
+const cuMatch = q => { const words = q.toLowerCase().split(/[\s,]+/).filter(Boolean); return (CU.jobs || []).filter(t => words.every(w => t.low.includes(w) || t.id.toLowerCase() === w)).slice(0, 20); };
+let cuTypeTimer = null;
+document.addEventListener('input', e => {
+  if (e.target.id !== 'cuQ') return;
+  clearTimeout(cuTypeTimer);
+  const q = e.target.value.trim();
+  cuTypeTimer = setTimeout(() => { if (!q) { CU.results = null; renderCu(); return; } if (CU.jobs) { CU.results = cuMatch(q); renderCu(); } }, 120);
+});
+document.addEventListener('focusin', e => { if (e.target.id === 'cuQ' && DB) cuJobs().catch(() => {}); });
 async function cuFind(){
   const q = ($('#cuQ') || {}).value || ''; if (!q.trim()) return;
   CU.busy = true; renderCu();
@@ -2571,8 +2603,11 @@ async function cuFind(){
     /* A link, or a word with both letters and numbers (86b2x9k), is probably a task ID. If ClickUp can't find it, search by name instead. */
     const w = q.trim(), looksLikeId = /clickup\.com/i.test(w) || (/^#?[a-z0-9]{6,12}$/i.test(w) && /\d/.test(w) && /[a-z]/i.test(w));
     if (looksLikeId) { try { const t = await cuCall({action:'get', task:q}); CU.busy = false; applyTask(t); return; } catch (e) { if (['missing_setup', 'not_on_team'].includes(e.message)) throw e; if (/clickup\.com/i.test(w)) { CU.results = []; throw e; } } }
-    const r = await cuCall({action:'search', q, statuses:CU_STATUSES});
-    CU.results = r.tasks || [];
+    let jobs = null;
+    try { jobs = await cuJobs(); }
+    catch (e) { if (['missing_setup', 'not_on_team'].includes(e.message)) throw e; } /* list not available: use the slower name search */
+    if (jobs) CU.results = cuMatch(q);
+    else { const r = await cuCall({action:'search', q, statuses:CU_STATUSES}); CU.results = r.tasks || []; } /* older ClickUp function without 'list' */
   } catch (e) { toast(cuErr(e)); }
   CU.busy = false; renderCu();
 }
@@ -2602,7 +2637,7 @@ document.addEventListener('click', e => {
   if (e.target.closest('#cuFind')) { cuFind(); return; }
   const p = e.target.closest('[data-cupick]'); if (p) { cuGet(p.dataset.cupick); return; }
   if (e.target.closest('#cuRefresh')) { cuGet(S.job.clickup.id); return; }
-  if (e.target.closest('#cuUnlink')) { delete S.job.clickup; CU.results = null; renderCu(); dirty(); return; }
+  if (e.target.closest('#cuUnlink')) { delete S.job.clickup; CU.results = null; $('#cuBox').innerHTML = ''; renderCu(); dirty(); return; }
   if (e.target.closest('#cuMapSave')) {
     const map = {}; document.querySelectorAll('[data-cumap]').forEach(sel => { if (sel.value) map[sel.dataset.cumap] = sel.value; });
     AUTH.sb.from('settings').upsert({type:'clickup', data:{map, fields:CU.fields}, updated_at:new Date().toISOString()})
@@ -2611,7 +2646,7 @@ document.addEventListener('click', e => {
 });
 document.addEventListener('keydown', e => { if (e.target.id === 'cuQ' && e.key === 'Enter') { e.preventDefault(); cuFind(); } });
 const _startSession2 = startSession;
-startSession = async sess => { await _startSession2(sess); if (DB) { await loadCuMap(); if (roleOf() === 'admin') renderTeam(); } renderCu(); };
+startSession = async sess => { await _startSession2(sess); CU.jobs = null; if (DB) { await loadCuMap(); if (roleOf() === 'admin') renderTeam(); cuJobs().catch(() => {}); } renderCu(); };
 const _fillInputs = fillInputs;
 fillInputs = () => { _fillInputs(); renderCu(); };
 renderCu();
