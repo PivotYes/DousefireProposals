@@ -73,33 +73,55 @@ Deno.serve(async (req) => {
       if (!q) return json({ tasks: [] });
       const wanted = (Array.isArray(body.statuses) && body.statuses.length ? body.statuses : DEFAULT_STATUSES)
         .map((s: unknown) => String(s).trim().toLowerCase());
-      const out: any[] = [];
-      for (let page = 0; page < 10 && out.length < 20; page++) {
-        const r = await fetch(`${API}/list/${listId}/task?page=${page}&subtasks=true`, { headers: H });
-        const d = await r.json();
-        if (!r.ok) return json({ error: "clickup_error", detail: d?.err || r.status }, 502);
-        for (const t of d.tasks || []) {
-          const status = String(t.status?.status || "").toLowerCase();
-          if (!wanted.includes(status)) continue;
-          if (String(t.name).toLowerCase().includes(q) || t.id === q || String(t.custom_id || "").toLowerCase() === q)
-            out.push({ id: t.id, name: t.name, status: t.status?.status || "", url: t.url });
+      // Ask ClickUp for only the wanted statuses first (fast). If that finds nothing, read the whole list and filter here,
+      // in case the status names are spelled differently in ClickUp.
+      const scan = async (byStatus: boolean) => {
+        const out: any[] = [];
+        const sq = byStatus ? wanted.map((st: string) => `&statuses[]=${encodeURIComponent(st)}`).join("") : "";
+        for (let page = 0; page < 10 && out.length < 20; page++) {
+          const r = await fetch(`${API}/list/${listId}/task?page=${page}&subtasks=true${sq}`, { headers: H });
+          const d = await r.json();
+          if (!r.ok) throw new Error(String(d?.err || r.status));
+          for (const t of d.tasks || []) {
+            const status = String(t.status?.status || "").toLowerCase();
+            if (!wanted.includes(status)) continue;
+            if (String(t.name).toLowerCase().includes(q) || t.id === q || String(t.custom_id || "").toLowerCase() === q)
+              out.push({ id: t.id, name: t.name, status: t.status?.status || "", url: t.url });
+          }
+          if (d.last_page || !(d.tasks || []).length) break;
         }
-        if (d.last_page || !(d.tasks || []).length) break;
+        return out;
+      };
+      let found: any[] = [];
+      try { found = await scan(true); } catch { found = []; }
+      if (!found.length) {
+        try { found = await scan(false); } catch (e) { return json({ error: "clickup_error", detail: String(e) }, 502); }
       }
-      return json({ tasks: out.slice(0, 20) });
+      return json({ tasks: found.slice(0, 20) });
     }
+
+    // Only tasks in the Proposals list can be read or have files attached
+    const getTask = async (id: string) => {
+      const r = await fetch(`${API}/task/${encodeURIComponent(id)}`, { headers: H });
+      const t = await r.json().catch(() => ({}));
+      if (!r.ok) return { error: (r.status === 404 || r.status === 401) ? "not_found" : "clickup_error", detail: t?.err || r.status, status: r.status };
+      if (String(t.list?.id || "") !== String(listId)) return { error: "not_found", detail: "not in the Proposals list", status: 404 };
+      return { t };
+    };
 
     if (body.action === "get") {
       const id = parseTaskId(body.task);
-      const r = await fetch(`${API}/task/${encodeURIComponent(id)}`, { headers: H });
-      const t = await r.json();
-      if (!r.ok) return json({ error: r.status === 404 ? "not_found" : "clickup_error", detail: t?.err || r.status }, r.status === 404 ? 404 : 502);
+      const g: any = await getTask(id);
+      if (g.error) return json({ error: g.error, detail: g.detail }, g.error === "not_found" ? 404 : 502);
+      const t = g.t;
       const fields = (t.custom_fields || []).map((f: any) => ({ name: f.name, type: f.type, value: fieldText(f) }));
       return json({ id: t.id, name: t.name, url: t.url, status: t.status?.status || "", list: t.list?.name || "", fields });
     }
 
     if (body.action === "attach") {
       const id = parseTaskId(body.task);
+      const g: any = await getTask(id);
+      if (g.error) return json({ error: g.error, detail: g.detail }, g.error === "not_found" ? 404 : 502);
       const bytes = Uint8Array.from(atob(String(body.base64 || "")), (c) => c.charCodeAt(0));
       if (!bytes.length) return json({ error: "bad_request" }, 400);
       const form = new FormData();
