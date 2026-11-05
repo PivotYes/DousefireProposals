@@ -107,6 +107,9 @@ ul.items{list-style:none;margin:0;padding:0;border:1px solid var(--line);border-
 .base{font-size:13px;color:var(--muted)}
 .base b{display:block;font-size:22px;color:var(--ink)}
 .priceRow .field input{max-width:180px}
+.priceNote{background:var(--sky-soft);border-radius:8px;padding:8px 12px;font-size:13px;margin:0 0 14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.priceNote[hidden]{display:none}
+.priceNote span{flex:1 1 300px}
 .texts{display:flex;flex-direction:column;gap:12px;margin-top:14px}
 .tbl{overflow-x:auto;border:1px solid var(--line);border-radius:10px}
 table.qb{border-collapse:collapse;width:100%;font-size:13.5px}
@@ -164,6 +167,9 @@ body.editing .page [contenteditable="true"]{outline:2px dashed #E0A000;outline-o
 .dlist{list-style:none;margin:0;padding:0;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--surface)}
 .dlist li{display:flex;align-items:center;gap:14px;padding:12px 16px;border-top:1px solid var(--line);flex-wrap:wrap}
 .dlist li:first-child{border-top:0}
+.dqBar{display:flex;flex-direction:column;gap:10px;margin-top:12px}
+.dqBar input[type=search]{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--sunk);font-size:15px}
+.dqCount{margin:16px 0 8px;font-size:14px;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
 .dlist .dn{flex:1 1 260px;min-width:0}
 .dlist .dn b{display:block}
 .dlist .dn span{font-size:13px;color:var(--muted)}
@@ -182,7 +188,7 @@ body.editing .page [contenteditable="true"]{outline:2px dashed #E0A000;outline-o
 @media print{
   :root{padding:0}
   body{background:#fff}
-  .top,.builder,.checks,.bar,.editNote,.view:not(#v-build),.toast{display:none!important}
+  .top,.builder,.checks,.bar,.editNote,.view:not(#v-build),.toast,.fbBtn,.conflictBar,.overflowNote,.reviewBar{display:none!important}
   #v-build{display:block!important;padding:0}
   .side{position:static;max-height:none;display:block}
   .pagesScroll{border:0;padding:0;overflow:visible;background:#fff}
@@ -269,6 +275,15 @@ select{font:inherit;color:inherit;width:100%;padding:8px 10px;border:1px solid v
 .pill.s-approved{background:var(--ok-soft);color:var(--ok);border-color:var(--ok)}
 .reviewBar{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px 14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .reviewBar[hidden]{display:none}
+.conflictBar{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn);border-radius:12px;padding:10px 14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:13.5px;font-weight:600}
+.conflictBar[hidden]{display:none}
+.fbBtn{position:fixed;right:calc(env(safe-area-inset-right,0px) + 16px);bottom:calc(env(safe-area-inset-bottom,0px) + 16px);z-index:15;border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:999px;padding:8px 14px;font-weight:600;font-size:13px;cursor:pointer;box-shadow:0 2px 10px rgba(0,0,0,.12)}
+.fbBtn:hover{border-color:var(--muted)}
+.fbCard textarea{min-height:130px}
+.fbCard .seg{margin-bottom:2px}
+.fbCtx{font-size:12.5px;color:var(--muted);display:flex;gap:6px;align-items:flex-start}
+.fbCtx input{margin-top:3px}
+.conflictBar span{flex:1 1 260px}
 .rbAct{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap}
 .rbAct select{width:auto}
 .dh{font-size:15px;margin:18px 0 8px}
@@ -379,6 +394,7 @@ a.btn{text-decoration:none;display:inline-block}
         <div class="base">Estimate total<b id="baseTotal">$0</b></div>
         <div class="field"><label for="override">Price on proposal</label><input type="number" id="override" placeholder="Same as estimate"></div>
       </div>
+      <p class="priceNote" id="priceNote" hidden></p>
       <div class="field"><span class="ql">Included items on the proposal</span>
         <div class="seg" id="modeSwitch">
           <button type="button" data-mode="lump" aria-pressed="true">One list</button>
@@ -400,6 +416,7 @@ a.btn{text-decoration:none;display:inline-block}
   </div>
 
   <aside class="side">
+    <div class="conflictBar" id="conflictBar" role="alert" hidden></div>
     <div class="reviewBar" id="reviewBar" hidden></div>
     <div class="checks" id="checks"></div>
     <div class="bar">
@@ -408,7 +425,7 @@ a.btn{text-decoration:none;display:inline-block}
       <button class="btn" id="wordBtn">Download Word</button>
       <button class="btn" id="printBtn">Print</button>
     </div>
-    <label class="cuSave" id="cuSaveWrap" hidden><input type="checkbox" id="cuSave" checked> Also save downloads to the ClickUp job</label>
+    <label class="cuSave" id="cuSaveWrap" hidden><input type="checkbox" id="cuSave"> Also save this download to the ClickUp job <span class="small">(approved proposals are saved there automatically)</span></label>
     <div class="overflowNote" id="overflowNote" role="alert" hidden></div>
     <div class="editNote">Editing the proposal text directly. Your edits are kept in downloads and saved drafts. Click "Back to builder" to discard them.</div>
     <div class="pagesScroll" id="pagesScroll"><div id="pages"></div></div>
@@ -421,6 +438,8 @@ a.btn{text-decoration:none;display:inline-block}
 <div class="authModal" id="authModal" hidden></div>
 <div class="authModal" id="qbModal" hidden></div>
 <datalist id="qbList"></datalist>
+<button type="button" class="fbBtn" id="fbOpen" aria-haspopup="dialog">Send feedback</button>
+<div class="authModal" id="fbModal" hidden></div>
 <div class="toast" id="toast" role="status"></div>
 
 <script>
@@ -810,7 +829,7 @@ function freshState(){
     id:null, type:null,
     job:{customer:'', project:'', addr1:'', addr2:'', date:today(), dateLabel:'eff', rev:'', num:'', dwgDate:'', dwgBy:'', dwgWord:'drawings', subject:'Fire Sprinkler Engineering and Installation', rep:'Yidel Bransdorfer'},
     a:{res:defaults(RES_Q), r13:defaults(R13_Q), com:defaults(COM_Q)},
-    st:{}, qty:{}, rate:{}, desc:{}, custom:[], order:[], secOf:{}, secLabel:{}, secPrice:{...DEFAULT_SEC_PRICE}, mode:'sec', override:'', texts:{...DEFAULT_TEXTS}
+    st:{}, qty:{}, rate:{}, desc:{}, custom:[], order:[], secOf:{}, secLabel:{}, secPrice:{...DEFAULT_SEC_PRICE}, prices:{}, mode:'sec', override:'', texts:{...DEFAULT_TEXTS}
   };
 }
 let S = freshState();
@@ -859,7 +878,13 @@ function items(){
 }
 const findItem = id => items().find(i => i.id === id);
 const st = it => S.st[it.id] ?? it.def(A());
-const rate = it => it.custom ? n0(it.rate) : (it.id in S.rate) ? S.rate[it.id] : it.rate;
+/* Price used for a line: typed by hand > locked when the draft was saved > current price list */
+const listRate = it => (S.prices && it.id in S.prices) ? S.prices[it.id] : it.rate;
+const rate = it => it.custom ? n0(it.rate) : (it.id in S.rate) ? S.rate[it.id] : listRate(it);
+/* Lines whose locked price is different from today's price list */
+const repriced = () => allStatic().filter(it => S.prices && it.id in S.prices && !(it.id in S.rate) && S.prices[it.id] !== it.rate);
+/* Lock today's price on every line that isn't locked yet, so a saved proposal never changes price on its own */
+function lockPrices(){ S.prices = S.prices || {}; allStatic().forEach(it => { if (!(it.id in S.prices)) S.prices[it.id] = it.rate; }); }
 const qty = it => it.custom ? 1 : (it.id in S.qty) ? S.qty[it.id] : (it.qty ? n0(it.qty(A())) : 1);
 const amt = it => rate(it) * qty(it);
 const label = it => cap(it.name);
@@ -1026,6 +1051,14 @@ function renderScope(){
 }
 function renderPrice(){
   $('#baseTotal').textContent = fmt(totals().base);
+  const ch = S.id ? repriced() : [], note = $('#priceNote');
+  if (note) {
+    note.hidden = !ch.length;
+    if (ch.length) {
+      const diff = ch.reduce((sum, it) => sum + (it.rate - S.prices[it.id]) * (st(it) === 'in' ? qty(it) : 0), 0);
+      note.innerHTML = `<span>Prices are locked from when this draft was saved. ${ch.length} item${ch.length > 1 ? 's have' : ' has'} a different price in today's price list${diff ? ` (${diff > 0 ? '+' : '-'}${fmt(Math.abs(diff))} on included items)` : ''}: ${ch.slice(0, 4).map(it => esc(label(it))).join(', ')}${ch.length > 4 ? ', ...' : ''}.</span> <button type="button" class="btn sm" id="usePrices">Use today's prices</button>`;
+    }
+  }
   document.querySelectorAll('#modeSwitch button').forEach(b => b.setAttribute('aria-pressed', b.dataset.mode === S.mode));
 }
 function renderQB(){
@@ -1333,31 +1366,101 @@ const nextNum = () => String(Math.max(1000, ...DRAFTS.map(d => parseInt(d.num, 1
 function autoNum(){}
 const normNum = n => String(n || '').trim().replace(/^#/, '').toLowerCase();
 async function claimNumber(){ return await DB.nextNumber(); }
+/* ---------- Saved drafts: search and quick filters ---------- */
+const DQ = {q:'', f:'all', server:null, busy:false, err:false, seq:0, timer:null};
+const DQ_FILTERS = [['all','All'],['mine','Mine'],['review','Waiting for review'],['changes','Changes requested'],['approved','Approved']];
+const dqTextCache = new Map();
+/* Everything a draft can be found by: number, name, customer, full address, who created it */
+function draftText(d){
+  const key = d.id + '|' + d.updatedAt;
+  if (dqTextCache.has(key)) return dqTextCache.get(key);
+  let job = {};
+  if (!d.addr || !d.customer) { try { job = (JSON.parse(d.state || '{}').job) || {}; } catch {} }
+  const t = [d.num, d.name, d.customer || job.customer, job.project, d.addr || [job.addr1, job.addr2].filter(Boolean).join(', '),
+    d.createdBy, nameOf(d.createdBy)].filter(Boolean).join(' • ').toLowerCase();
+  dqTextCache.set(key, t);
+  return t;
+}
+function draftPasses(d){
+  const f = DQ.f;
+  if (f === 'mine' && d.createdBy !== AUTH.email) return false;
+  if ((f === 'review' || f === 'changes' || f === 'approved') && d.status !== f) return false;
+  const words = DQ.q.toLowerCase().replace(/[#,;:()"*%]/g, ' ').split(/\s+/).map(w => w.replace(/^[.'-]+|[.'-]+$/g, '')).filter(Boolean);
+  if (!words.length) return true;
+  const t = draftText(d);
+  return words.every(w => t.includes(w));
+}
+const searching = () => !!DQ.q.trim() || DQ.f !== 'all';
+/* Ask the database too, so drafts older than the 500 loaded are found */
+function searchServer(){
+  clearTimeout(DQ.timer);
+  if (!DB || !DB.searchDrafts || !searching()) { DQ.server = null; DQ.busy = false; renderDraftList(); return; }
+  DQ.busy = true; renderDraftList();
+  const my = ++DQ.seq;
+  DQ.timer = setTimeout(async () => {
+    const q = DQ.q.trim().replace(/^#/, ''), ql = q.toLowerCase();
+    const people = ql ? TEAM.filter(t => String(t.name || '').toLowerCase().includes(ql)).map(t => t.email) : [];
+    try {
+      const rows = await DB.searchDrafts({q, people, status:['review','changes','approved'].includes(DQ.f) ? DQ.f : '', mine:DQ.f === 'mine' ? AUTH.email : ''});
+      if (my !== DQ.seq) return;
+      DQ.server = rows; DQ.err = false;
+    } catch { if (my !== DQ.seq) return; DQ.server = null; DQ.err = true; }
+    DQ.busy = false; renderDraftList();
+  }, 300);
+}
 function renderDrafts(){
   const v = $('#v-drafts');
   if (!DB) { v.innerHTML = `<div class="panel"><h2>Saved drafts</h2><p>${esc(DRAFT_ERR || 'Sign in to see saved drafts.')}</p></div>`; return; }
-  const when = d => new Date(d.updatedAt).toLocaleString([], {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'});
+  if (!$('#dqInput')) {
+    v.innerHTML = `<div class="panel"><h2>Saved drafts</h2><p>Every draft is shared with the whole team, and anyone can open and edit it.</p>
+      <div class="dqBar"><input type="search" id="dqInput" placeholder="Search by proposal #, customer, address, or who created it" aria-label="Search drafts" autocomplete="off">
+      <div class="seg sm dqFilters" role="group" aria-label="Show">${DQ_FILTERS.map(([k, l]) => `<button type="button" data-dqf="${k}">${l}</button>`).join('')}</div></div></div>
+      <div id="dqList"></div>`;
+    $('#dqInput').value = DQ.q;
+  }
+  document.querySelectorAll('[data-dqf]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.dqf === DQ.f)));
+  renderDraftList();
+}
+function renderDraftList(){
+  const box = $('#dqList'); if (!box) return;
+  const when = d => new Date(d.updatedAt).toLocaleString([], {month:'short', day:'numeric', year:new Date(d.updatedAt).getFullYear() === new Date().getFullYear() ? undefined : 'numeric', hour:'numeric', minute:'2-digit'});
   const li = d => `<li>
       <div class="dn"><b>${d.num ? '#' + esc(d.num) + ' ' : ''}${esc(d.name || 'Untitled proposal')}</b>
       <span><span class="pill s-${esc(d.status || 'draft')}">${STATUS[d.status] || 'Draft'}</span> ${esc(TYPES[d.type]?.label || '')} · Updated ${esc(when(d))}${d.updatedBy ? ' by ' + esc(nameOf(d.updatedBy)) : ''}${d.createdBy ? ' · Created by ' + esc(nameOf(d.createdBy)) : ''}${d.reviewer ? ' · Reviewer: ' + esc(nameOf(d.reviewer)) : ''}${S.id===d.id?' · Open now':''}</span></div>
       <div class="dp">${fmt(d.total)}</div>
       <button class="btn" data-open="${esc(d.id)}">Open</button>
       ${canDelete() ? `<button class="btn danger" data-del="${esc(d.id)}">${confirmDel===d.id?'Confirm delete':'Delete'}</button>` : ''}</li>`;
+  if (searching()) {
+    const seen = new Set(), found = [];
+    [...DRAFTS, ...(DQ.server || [])].forEach(d => { if (!seen.has(d.id) && draftPasses(d)) { seen.add(d.id); found.push(d); } });
+    found.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+    const status = DQ.busy ? 'Searching older drafts too...' : DQ.err ? 'Showing recent drafts only. Older drafts could not be searched right now.' : '';
+    box.innerHTML = `<p class="dqCount"><b>${found.length}</b> draft${found.length === 1 ? '' : 's'} found${status ? ` <span class="small">${status}</span>` : ''}${searching() ? ` <button type="button" class="linkbtn" id="dqClear">Clear search</button>` : ''}</p>
+      ${found.length ? `<ul class="dlist">${found.map(li).join('')}</ul>` : `<div class="panel"><p>${DQ.busy ? 'Searching...' : 'No drafts match. Try fewer words, or a different filter.'}</p></div>`}`;
+    return;
+  }
   const mine = DRAFTS.filter(d => d.status === 'review' && d.reviewer === AUTH.email);
   const rest = DRAFTS.filter(d => !mine.includes(d));
-  v.innerHTML = `<div class="panel"><h2>Saved drafts</h2><p>Every draft is shared with the whole team, and anyone can open and edit it.</p></div>
-    ${mine.length ? `<h3 class="dh">Waiting for your review (${mine.length})</h3><ul class="dlist">${mine.map(li).join('')}</ul><h3 class="dh">All drafts</h3>` : ''}
-    ${rest.length ? `<ul class="dlist">${rest.map(li).join('')}</ul>` : (mine.length ? '' : `<div class="panel"><p>No saved drafts yet. Click "Save draft" on any proposal to keep it here.</p></div>`)}`;
+  box.innerHTML = `${mine.length ? `<h3 class="dh">Waiting for your review (${mine.length})</h3><ul class="dlist">${mine.map(li).join('')}</ul><h3 class="dh">All drafts</h3>` : ''}
+    ${rest.length ? `<ul class="dlist">${rest.map(li).join('')}</ul>` : (mine.length ? '' : `<div class="panel"><p>No saved drafts yet. Click "Save draft" on any proposal to keep it here.</p></div>`)}
+    ${DRAFTS.length >= 500 ? '<p class="small dqMore">Showing the 500 most recent drafts. Search to find older ones.</p>' : ''}`;
 }
+document.addEventListener('input', e => { if (e.target.id !== 'dqInput') return; DQ.q = e.target.value; searchServer(); });
+document.addEventListener('click', e => {
+  const f = e.target.closest('[data-dqf]');
+  if (f) { DQ.f = f.dataset.dqf; renderDrafts(); searchServer(); return; }
+  if (e.target.closest('#dqClear')) { DQ.q = ''; DQ.f = 'all'; const i = $('#dqInput'); if (i) i.value = ''; renderDrafts(); searchServer(); }
+});
 function draftName(){ const j = S.job; return [j.customer, j.project, j.addr1].filter(Boolean).join(', ') || 'Untitled proposal'; }
 function serial(){
-  const o = {type:S.type, job:S.job, a:S.a, st:S.st, qty:S.qty, rate:S.rate, desc:S.desc, custom:S.custom, order:S.order, secOf:S.secOf, secLabel:S.secLabel, secPrice:S.secPrice, mode:S.mode, override:S.override, texts:S.texts};
+  const o = {type:S.type, job:S.job, a:S.a, st:S.st, qty:S.qty, rate:S.rate, prices:S.prices, desc:S.desc, custom:S.custom, order:S.order, secOf:S.secOf, secLabel:S.secLabel, secPrice:S.secPrice, mode:S.mode, override:S.override, texts:S.texts};
   if (UI.editing) o.editedHtml = cleanPagesHTML($('#pages').innerHTML, '__LH__');
   return o;
 }
 async function saveDraft(statusOnly){
-  if (!DB) { toast(AUTH.email ? 'Your email is not on the team list yet. Ask the admin to add you.' : 'Sign in to save drafts.'); return; }
+  if (!DB) { toast(AUTH.email ? 'Your email is not on the team list yet. Ask the admin to add you.' : 'Sign in to save drafts.'); return false; }
   UI.saving = true; renderStatus();
+  let ok = false;
   try {
     const typed = normNum(S.job.num);
     if (typed) {
@@ -1365,29 +1468,45 @@ async function saveDraft(statusOnly){
       if (local || await DB.numTaken(String(S.job.num).trim().replace(/^#/, ''), S.id)) {
         UI.saving = false; renderStatus();
         toast(`Proposal #${String(S.job.num).trim()} is already used by another draft. Clear the number to get a new one, or use a different number.`);
-        return;
+        return false;
       }
     } else {
       S.job.num = await claimNumber(); $('#j-num').value = S.job.num; UI.numAuto = false;
       if (!UI.editing) renderDoc(true);
       else document.querySelectorAll('#pages [data-k="re"] span:last-child').forEach(sp => { if (!/Proposal #/.test(sp.textContent)) sp.insertAdjacentText('afterbegin', `Proposal #${S.job.num}${S.job.rev ? ' Rev-' + S.job.rev : ''}\u00a0\u00a0\u00a0`); });
     }
+    /* Someone else (or another tab) may have saved this draft since it was opened */
+    if (S.id && DB.getDraft) {
+      let cur; try { cur = await DB.getDraft(S.id); } catch { cur = undefined; }
+      if (cur === null) {
+        if (!confirm('This draft was deleted by someone else while you were working on it. Save your version as a new draft?')) { UI.saving = false; renderStatus(); return false; }
+        S.id = null; UI.loadedAt = null;
+      } else if (cur && UI.loadedAt && cur.updatedAt > UI.loadedAt) {
+        const who = cur.updatedBy === AUTH.email ? 'You (in another tab or window)' : nameOf(cur.updatedBy) || 'Someone else';
+        const when = new Date(cur.updatedAt).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
+        if (!confirm(`${who} saved changes to this draft at ${when}, after you opened it.\n\nOK = save yours anyway and replace their changes.\nCancel = don't save. You can open their version from the yellow note or Saved drafts.`)) { UI.saving = false; renderStatus(); renderConflict(); return false; }
+        UI.meta = {...UI.meta, status:cur.status || UI.meta.status, reviewer:cur.reviewer ?? UI.meta.reviewer, approvedBy:cur.approvedBy ?? UI.meta.approvedBy};
+      }
+    }
+    if (S.type) lockPrices();
     const m = UI.meta;
     if (!S.id) { m.createdBy = AUTH.email; if (ME && ME.review_by && m.status === 'draft') { m.status = 'review'; m.reviewer = ME.review_by; } }
     else if (m.status === 'changes' && m.createdBy === AUTH.email && m.reviewer && !statusOnly) m.status = 'review';
     m.updatedBy = AUTH.email;
-    const data = {name:draftName(), num:S.job.num, type:S.type, total:totals().total, updatedAt:new Date().toISOString(), state:JSON.stringify(serial()),
+    const data = {name:draftName(), num:S.job.num, customer:S.job.customer || '', addr:[S.job.addr1, S.job.addr2].filter(Boolean).join(', '), type:S.type, total:totals().total, updatedAt:new Date().toISOString(), state:JSON.stringify(serial()),
       status:m.status, reviewer:m.reviewer || '', createdBy:m.createdBy || AUTH.email, updatedBy:AUTH.email, approvedBy:m.approvedBy || ''};
     if (S.id) await DB.collection('drafts').doc(S.id).set(data);
     else { const ref = await DB.collection('drafts').add(data); S.id = ref.id; }
-    UI.dirty = false; UI.savedAt = new Date(); if (!statusOnly) toast(m.status === 'review' && m.reviewer ? `Draft saved and sent to ${nameOf(m.reviewer)} for review` : 'Draft saved');
+    UI.dirty = false; UI.savedAt = new Date(); UI.loadedAt = data.updatedAt; ok = true; if (!statusOnly) toast(m.status === 'review' && m.reviewer ? `Draft saved and sent to ${nameOf(m.reviewer)} for review` : 'Draft saved');
   } catch (e) { toast(e && e.code === '23505' ? `Proposal #${S.job.num} is already used by another draft. Clear the number to get a new one.` : e && e.code === 'not_granted' ? 'You do not have permission to save drafts here.' : 'Could not save the draft. Try again.'); }
-  UI.saving = false; renderStatus(); renderDrafts(); renderReview();
+  UI.saving = false; renderStatus(); renderDrafts(); renderReview(); renderPrice();
+  return ok;
 }
 function loadDraft(d){
   let o; try { o = JSON.parse(d.state); } catch { toast('This draft could not be opened.'); return; }
   const base = freshState();
   S = {...base, ...o, id:d.id, job:{...base.job, ...o.job}, a:{res:{...base.a.res, ...(o.a?.res)}, r13:{...base.a.r13, ...(o.a?.r13)}, com:{...base.a.com, ...(o.a?.com)}}, texts:{...base.texts, ...o.texts}, desc:o.desc||{}, custom:o.custom||[], order:o.order||[], secOf:o.secOf||{}, secLabel:o.secLabel||{}, secPrice:o.secPrice||{...DEFAULT_SEC_PRICE}};
+  UI.loadedAt = d.updatedAt || null;
   UI.meta = {status:d.status || 'draft', reviewer:d.reviewer || '', createdBy:d.createdBy || '', updatedBy:d.updatedBy || '', approvedBy:d.approvedBy || ''};
   setEditing(false, true);
   UI.dirty = false; UI.savedAt = new Date(d.updatedAt); UI.prevQ = []; UI.numAuto = false;
@@ -1587,6 +1706,69 @@ function cleanPagesHTML(html, imgSrc){
   };
   window.addEventListener('scroll', mark, {passive:true}); mark();
 })();
+/* Escape key or a click on the dark background closes a pop-up */
+function closeTopModal(){
+  if (!$('#qbModal').hidden && typeof QBP !== 'undefined' && QBP) { if (QBP.sending) return true; QBP = null; renderQbModal(); return true; }
+  if (!$('#fbModal').hidden) { if (FB.sending) return true; FB.open = false; renderFeedback(); return true; }
+  if (!$('#authModal').hidden && AUTHMODE !== 'newpass') { UI.authOpen = false; renderAuthModal(); return true; }
+  return false;
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && closeTopModal()) e.preventDefault(); });
+
+/* ---------- Send feedback: saved in the database and emailed to the office ---------- */
+const FEEDBACK_EMAIL = 'office@pivotyes.com'; /* used only as a backup when the app can't send it */
+const FB = {open:false, kind:'problem', msg:'', ctx:true, sending:false};
+const FB_KINDS = [['problem', 'Something is wrong'], ['change', 'Change request'], ['idea', 'Idea']];
+function fbContext(){
+  const view = {build:'Build proposal', drafts:'Saved drafts', map:'Logic map', team:'Team'}[document.body.dataset.view] || document.body.dataset.view;
+  return {'Screen':view, 'Proposal #':S.job.num || (S.id ? '' : 'not saved yet'), 'Customer':S.job.customer, 'Address':[S.job.addr1, S.job.addr2].filter(Boolean).join(', '),
+    'Job type':(TYPES[S.type] || {}).label || '', 'Editing text by hand':UI.editing ? 'Yes' : '', 'Unsaved changes':UI.dirty ? 'Yes' : '',
+    'Window size':`${window.innerWidth} x ${window.innerHeight}`, 'Sent at':new Date().toLocaleString()};
+}
+function renderFeedback(){
+  const m = $('#fbModal');
+  $('#fbOpen').hidden = FB.open;
+  if (!FB.open) { m.hidden = true; m.innerHTML = ''; return; }
+  m.hidden = false;
+  const signedIn = !!DB;
+  m.innerHTML = `<form class="authCard fbCard" id="fbForm" role="dialog" aria-modal="true" aria-labelledby="fbTitle">
+    <div class="authTop"><h2 id="fbTitle">Send feedback</h2><button type="button" class="linkbtn" id="fbClose">Close</button></div>
+    <p class="small">Report a problem or ask for a change. It goes straight to the office.</p>
+    <div class="seg sm" role="group" aria-label="Type of feedback">${FB_KINDS.map(([v, l]) => `<button type="button" data-fbkind="${v}" aria-pressed="${FB.kind === v}">${l}</button>`).join('')}</div>
+    <label class="ql" for="fbMsg">${FB.kind === 'problem' ? 'What happened? What did you expect?' : FB.kind === 'change' ? 'What should change, and why?' : 'What\u2019s your idea?'}</label>
+    <textarea id="fbMsg" maxlength="5000" required placeholder="${FB.kind === 'problem' ? 'e.g. I clicked Download PDF on #1104 and the last page was blank.' : 'e.g. Add a field for the GC\u2019s phone number on the cover page.'}">${esc(FB.msg)}</textarea>
+    <label class="fbCtx"><input type="checkbox" id="fbCtx"${FB.ctx ? ' checked' : ''}> Include which screen and proposal I'm on${S.job.num ? ` (#${esc(S.job.num)})` : ''}</label>
+    ${signedIn ? '' : `<p class="authMsg">You're not signed in, so this opens your email app instead.</p>`}
+    <button class="btn primary" type="submit"${FB.sending ? ' disabled' : ''}>${FB.sending ? 'Sending...' : 'Send'}</button></form>`;
+  setTimeout(() => { const t = $('#fbMsg'); if (t && document.activeElement !== t) { t.focus(); t.setSelectionRange(t.value.length, t.value.length); } }, 0);
+}
+function fbMailto(){
+  const ctx = FB.ctx ? '\n\n' + Object.entries(fbContext()).filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join('\n') : '';
+  const kind = (FB_KINDS.find(k => k[0] === FB.kind) || ['', 'Feedback'])[1];
+  location.href = `mailto:${FEEDBACK_EMAIL}?subject=${encodeURIComponent('[Proposal Builder] ' + kind)}&body=${encodeURIComponent(FB.msg + ctx)}`;
+}
+async function sendFeedback(){
+  FB.msg = ($('#fbMsg') || {}).value || FB.msg; FB.ctx = !!($('#fbCtx') || {}).checked;
+  if (!FB.msg.trim()) { toast('Write a few words first.'); $('#fbMsg') && $('#fbMsg').focus(); return; }
+  if (!DB) { fbMailto(); return; }
+  FB.sending = true; renderFeedback();
+  try {
+    const r = await fnCall('feedback', {kind:FB.kind, message:FB.msg.trim(), name:(ME && ME.name) || '', context:FB.ctx ? fbContext() : {}});
+    FB.sending = false; FB.open = false; FB.msg = ''; renderFeedback();
+    toast(r.emailed ? 'Thanks! Your feedback was sent to the office.' : 'Thanks! Your feedback was saved. The office will see it.');
+  } catch (e) {
+    FB.sending = false; renderFeedback();
+    if (confirm('The feedback could not be sent from the app. Open your email app to send it instead?')) fbMailto();
+  }
+}
+document.addEventListener('click', e => {
+  if (e.target.closest('#fbOpen')) { FB.open = true; renderFeedback(); return; }
+  if (e.target.closest('#fbClose')) { FB.msg = ($('#fbMsg') || {}).value || ''; FB.open = false; renderFeedback(); return; }
+  const k = e.target.closest('[data-fbkind]'); if (k) { FB.msg = ($('#fbMsg') || {}).value || ''; FB.ctx = !!($('#fbCtx') || {}).checked; FB.kind = k.dataset.fbkind; renderFeedback(); }
+});
+document.addEventListener('input', e => { if (e.target.id === 'fbMsg') FB.msg = e.target.value; });
+document.addEventListener('submit', e => { if (e.target.id !== 'fbForm') return; e.preventDefault(); sendFeedback(); });
+document.addEventListener('mousedown', e => { if (e.target.classList && e.target.classList.contains('authModal')) closeTopModal(); });
 document.addEventListener('paste', e => {
   if (!UI.editing || !e.target.closest || !e.target.closest('#pages')) return;
   e.preventDefault();
@@ -1657,14 +1839,16 @@ document.addEventListener('click', e => {
   if (b.dataset.secmove) { moveSection(decS(b.dataset.secmove), +b.dataset.dir); renderOut(); dirty(); return; }
   if (b.dataset.secprice) { const k = decS(b.dataset.secprice); S.secPrice[k] = !S.secPrice[k]; renderOut(); dirty(); return; }
   if (b.dataset.mode) { S.mode = b.dataset.mode; renderOut(); dirty(); return; }
-  if (b.dataset.open) { const d = DRAFTS.find(x => x.id === b.dataset.open); if (d && (!UI.dirty || confirm('You have unsaved changes on the proposal you are working on. Open this draft and lose those changes?'))) loadDraft(d); return; }
+  if (b.dataset.open) { const d = DRAFTS.find(x => x.id === b.dataset.open) || (DQ.server || []).find(x => x.id === b.dataset.open); if (d && (!UI.dirty || confirm('You have unsaved changes on the proposal you are working on. Open this draft and lose those changes?'))) loadDraft(d); return; }
   if (b.dataset.del) {
     const id = b.dataset.del;
     if (confirmDel !== id) { confirmDel = id; renderDrafts(); return; }
     confirmDel = null;
-    DB.collection('drafts').doc(id).delete().then(() => { if (S.id === id) S.id = null; toast('Draft deleted'); }).catch(() => toast('Could not delete the draft.'));
+    DB.collection('drafts').doc(id).delete().then(() => { if (S.id === id) S.id = null; toast('Draft deleted'); if (DQ.server) { DQ.server = DQ.server.filter(x => x.id !== id); renderDraftList(); } }).catch(() => toast('Could not delete the draft.'));
     return;
   }
+  if (b.id === 'openTheirs') { const d = DRAFTS.find(x => x.id === S.id); if (d && (!UI.dirty || confirm('Open their version? Your unsaved changes will be lost.'))) loadDraft(d); return; }
+  if (b.id === 'usePrices') { repriced().forEach(it => delete S.prices[it.id]); lockPrices(); renderOut(); dirty(); toast('Updated to today\u2019s prices. Save the draft to keep them.'); return; }
   if (b.id === 'csvBtn') { exportCsv(); return; }
 });
 document.addEventListener('change', e => {
@@ -1729,12 +1913,12 @@ window.addEventListener('beforeunload', e => { if (UI.dirty || (UI.editing && UI
 $('#pdfBtn').addEventListener('click', e => busy(e.currentTarget, exportPdf));
 $('#wordBtn').addEventListener('click', e => busy(e.currentTarget, exportWord));
 $('#printBtn').addEventListener('click', () => { try { window.print(); } catch { toast('Printing is blocked here. Use Download PDF.'); } });
-$('#saveBtn').addEventListener('click', saveDraft);
+$('#saveBtn').addEventListener('click', () => saveDraft());
 $('#newBtn').addEventListener('click', () => {
   const nb = $('#newBtn');
   if (UI.dirty && !nb.dataset.sure) { nb.dataset.sure = '1'; nb.textContent = 'Discard changes?'; setTimeout(() => { delete nb.dataset.sure; nb.textContent = 'New'; }, 3000); return; }
   delete nb.dataset.sure; nb.textContent = 'New';
-  S = freshState(); setEditing(false, true); UI.dirty = false; UI.savedAt = null; UI.prevQ = []; UI.numAuto = true; UI.meta = {status:'draft', reviewer:'', createdBy:'', updatedBy:''}; renderReview();
+  S = freshState(); setEditing(false, true); UI.dirty = false; UI.savedAt = null; UI.loadedAt = null; UI.prevQ = []; UI.numAuto = true; UI.meta = {status:'draft', reviewer:'', createdBy:'', updatedBy:''}; renderReview();
   fillInputs(); renderAll(); autoNum(); renderDrafts(); setView('build');
 });
 
@@ -1778,6 +1962,22 @@ function makeDB(sb){
         async set(d){ const {error} = await sb.from('settings').upsert({type:k, data:d, updated_at:new Date().toISOString()}); if (error) throw error; refreshSetting(k); }
       }; } };
     },
+    async searchDrafts({q, people, status, mine}){
+      let qry = sb.from('drafts').select('id,data').order('updated_at', {ascending:false}).limit(200);
+      if (status) qry = qry.eq('data->>status', status);
+      if (mine) qry = qry.eq('data->>createdBy', mine);
+      /* Ask for the longest word; the app then checks every word, so "Van Horne, St" still matches */
+      const t = String(q || '').replace(/["\\,()%*.]/g, ' ').split(/\s+/).filter(Boolean).sort((a, b) => b.length - a.length)[0] || '';
+      if (t) {
+        const like = `ilike."%${t}%"`;
+        const parts = ['num', 'name', 'customer', 'addr', 'createdBy'].map(f => `data->>${f}.${like}`);
+        (people || []).forEach(e => parts.push(`data->>createdBy.eq."${e}"`));
+        qry = qry.or(parts.join(','));
+      }
+      const {data, error} = await qry; if (error) throw error;
+      return (data || []).map(r => ({id:r.id, ...r.data}));
+    },
+    async getDraft(id){ const {data, error} = await sb.from('drafts').select('id,data').eq('id', id).maybeSingle(); if (error) throw error; return data ? {id:data.id, ...data.data} : null; },
     async nextNumber(){ const {data, error} = await sb.rpc('next_proposal_number'); if (error) throw error; return String(data); },
     async numTaken(num, id){
       let q = sb.from('drafts').select('id').eq('data->>num', num).limit(1);
@@ -1947,7 +2147,17 @@ document.addEventListener('click', async e => {
 /* ---------- Review: status on each draft ---------- */
 const STATUS = {draft:'Draft', review:'Waiting for review', changes:'Changes requested', approved:'Approved'};
 UI.meta = {status:'draft', reviewer:'', createdBy:'', updatedBy:''};
+function renderConflict(){
+  const el = $('#conflictBar'); if (!el) return;
+  const cur = S.id && DRAFTS.find(d => d.id === S.id);
+  const newer = cur && UI.loadedAt && cur.updatedAt && cur.updatedAt > UI.loadedAt;
+  el.hidden = !newer;
+  if (!newer) return;
+  const who = cur.updatedBy === AUTH.email ? 'You saved this draft in another tab or window' : `${esc(nameOf(cur.updatedBy) || 'Someone else')} saved changes to this draft`;
+  el.innerHTML = `<span>${who} at ${esc(new Date(cur.updatedAt).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}))}. Saving now would replace their changes.</span><button type="button" class="btn sm" id="openTheirs">Open their version</button>`;
+}
 function renderReview(){
+  renderConflict();
   const el = $('#reviewBar'); if (!el) return;
   const m = UI.meta, mine = DRAFTS.filter(d => d.status === 'review' && d.reviewer === AUTH.email).length;
   document.querySelectorAll('.tabs [data-view="drafts"]').forEach(b => b.innerHTML = `Saved drafts${mine ? ` <span class="badge">${mine}</span>` : ''}`);
@@ -1966,7 +2176,7 @@ async function setStatus(status, reviewer){
   UI.meta.status = status;
   if (reviewer !== undefined) UI.meta.reviewer = reviewer;
   if (status === 'approved') UI.meta.approvedBy = AUTH.email;
-  await saveDraft(true);
+  if (!(await saveDraft(true))) return;
   if (status === 'approved' && S.job.clickup && DB) { try { await cuAttach(await makePdf(), fileBase() + ' - Approved.pdf'); } catch {} }
   toast(status === 'approved' ? 'Approved' : status === 'review' ? 'Sent for review' : status === 'changes' ? 'Sent back for changes' : 'Reopened');
 }
@@ -2108,20 +2318,30 @@ function applyTask(t){
   if (t.fields && t.fields.length) CU.fields = t.fields.map(f => f.name);
   const map = Object.keys(CU.map || {}).length ? CU.map : guessMap(t.fields || []);
   const get = name => cuText(name === '__name' ? t.name : ((t.fields || []).find(f => f.name === name) || {}).value);
-  let filled = 0;
+  /* Work out what ClickUp would fill, then only replace details someone typed after asking */
+  const next = {};
   CU_TARGETS.forEach(([k]) => {
     const src = map[k]; if (!src) return;
     const v = String(get(src) || '').trim(); if (!v) return;
-    if (k === 'addr1' && map.addr2 === src) { const a = splitAddr(v); S.job.addr1 = a.street; S.job.addr2 = a.csz; filled++; return; }
+    if (k === 'addr1' && map.addr2 === src) { const a = splitAddr(v); next.addr1 = a.street; if (a.csz) next.addr2 = a.csz; return; }
     if (k === 'addr2' && map.addr1 === src) return;
-    if (k === 'addr1') { const a = splitAddr(v); S.job.addr1 = a.street; if (a.csz && !map.addr2) S.job.addr2 = a.csz; filled++; return; }
-    if (k === 'addr2') { const a = splitAddr(v); S.job.addr2 = (a.csz && looksLikeStreet(a.street)) ? a.csz : v.replace(/,?\s*(USA|United States)\s*$/i, '').trim(); filled++; return; }
+    if (k === 'addr1') { const a = splitAddr(v); next.addr1 = a.street; if (a.csz && !map.addr2) next.addr2 = a.csz; return; }
+    if (k === 'addr2') { const a = splitAddr(v); next.addr2 = (a.csz && looksLikeStreet(a.street)) ? a.csz : v.replace(/,?\s*(USA|United States)\s*$/i, '').trim(); return; }
+    next[k] = v;
+  });
+  const labelOf = k => (CU_TARGETS.find(x => x[0] === k) || ['', k])[1];
+  const clash = Object.keys(next).filter(k => String(S.job[k] || '').trim() && String(S.job[k]).trim() !== next[k]);
+  const replace = clash.length && confirm(`ClickUp has different details than what's typed here:\n\n${clash.map(k => `${labelOf(k)}\n   Here: ${S.job[k]}\n   ClickUp: ${next[k]}`).join('\n\n')}\n\nOK = use the ClickUp details. Cancel = keep what's typed and only fill the empty fields.`);
+  let filled = 0;
+  Object.entries(next).forEach(([k, v]) => {
+    if (String(S.job[k] || '').trim() === v) return;
+    if (clash.includes(k) && !replace) return;
     S.job[k] = v; filled++;
   });
   S.job.clickup = {id:t.id, name:t.name, url:t.url || ''};
   CU.results = null;
   fillInputs(); renderCu(); renderChecks(); renderDoc(); dirty(); if (roleOf() === 'admin') renderTeam();
-  toast(filled ? `Linked to "${t.name}" and filled ${filled} field${filled > 1 ? 's' : ''}` : `Linked to "${t.name}". An admin can match ClickUp fields in the Team tab.`);
+  toast(filled ? `Linked to "${t.name}" and updated ${filled} field${filled > 1 ? 's' : ''}` : Object.keys(next).length ? `Linked to "${t.name}". Details already match or were kept.` : `Linked to "${t.name}". An admin can match ClickUp fields in the Team tab.`);
 }
 function renderCu(){
   const box = $('#cuBox'); if (!box) return;
@@ -2228,6 +2448,14 @@ async function qbSend(){
   const j = S.job;
   if (!j.customer) { toast('Add the customer name first.'); return; }
   if (!totals().incl.length) { toast('There are no included items to send.'); return; }
+  /* Save first so the estimate gets the proposal number and the link to it is kept with the draft */
+  if (!S.id || UI.dirty) {
+    QB.busy = true; renderQB();
+    const saved = await saveDraft(true);
+    QB.busy = false; renderQB();
+    if (!saved) { toast('Save the draft before sending to QuickBooks.'); return; }
+    toast(`Draft saved as proposal #${S.job.num}`);
+  }
   QB.busy = true; renderQB();
   try {
     const payload = qbPayload();
@@ -2288,7 +2516,7 @@ async function qbConfirm(){
     const r = await fnCall('qbo', {action:'send', ...QBP.payload, customerId:QBP.cust === 'new' ? '' : QBP.cust, project:p});
     S.job.qbo = {id:r.id, docNumber:r.docNumber, url:r.url, customer:r.customer, project:r.project};
     QB.last = r; QBP.done = r;
-    if (S.id) await saveDraft(true); else dirty();
+    await saveDraft(true);
   } catch (e) { toast(qbErr(e) + (e.detail && e.message === 'qbo_error' ? ': ' + e.detail : '')); }
   if (QBP) QBP.sending = false;
   renderQbModal(); renderQB();
