@@ -170,6 +170,7 @@ body.editing .page [contenteditable="true"]{outline:2px dashed #E0A000;outline-o
 .dlist li:first-child{border-top:0}
 .dqBar{display:flex;flex-direction:column;gap:10px;margin-top:12px}
 .dqBar input[type=search]{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--sunk);font-size:15px}
+.dlist .dn .dnote{display:block;margin-top:3px;color:var(--warn);font-size:13px}
 .dqCount{margin:16px 0 8px;font-size:14px;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
 .dlist .dn{flex:1 1 260px;min-width:0}
 .dlist .dn b{display:block}
@@ -290,6 +291,9 @@ select{font:inherit;color:inherit;width:100%;padding:8px 10px;border:1px solid v
 .pill.s-approved{background:var(--ok-soft);color:var(--ok);border-color:var(--ok)}
 .reviewBar{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px 14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .reviewBar[hidden]{display:none}
+.rbNote{flex:1 1 100%;background:var(--warn-soft);color:var(--ink);border-radius:8px;padding:8px 10px;font-size:13.5px;white-space:pre-wrap}
+.rbForm{flex:1 1 100%;display:flex;flex-direction:column;gap:6px}
+.rbForm textarea{min-height:70px}
 .conflictBar{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn);border-radius:12px;padding:10px 14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:13.5px;font-weight:600}
 .conflictBar[hidden]{display:none}
 .fbBtn{position:fixed;right:calc(env(safe-area-inset-right,0px) + 16px);bottom:calc(env(safe-area-inset-bottom,0px) + 16px);z-index:15;border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:999px;padding:8px 14px;font-weight:600;font-size:13px;cursor:pointer;box-shadow:0 2px 10px rgba(0,0,0,.12)}
@@ -874,13 +878,16 @@ const isNA = it => !!(it.na && it.na(A())) || (!!it.dep && !filled(A()[it.dep]))
 /* Settings from the logic map editor (shared, only Owner and Editors can change) */
 let CFG = {res:{items:{}, extra:[]}, com:{items:{}, extra:[]}};
 const cfgKeyOf = k => (TYPES[k] && TYPES[k].cfg) || k;
-const cfg = () => CFG[cfgKeyOf(S.type)] || {items:{}, extra:[]};
+/* A saved proposal keeps the Logic map (names, sections, defaults, added items) from when it was saved */
+const liveCfg = () => CFG[cfgKeyOf(S.type)] || {items:{}, extra:[]};
+const cfg = () => (S.cfgSnap && S.cfgSnap.key === cfgKeyOf(S.type)) ? S.cfgSnap.conf : liveCfg();
+const cfgSig = c => JSON.stringify({items:(c && c.items) || {}, extra:(c && c.extra) || []});
+const cfgChanged = () => !!(S.id && S.cfgSnap && S.cfgSnap.key === cfgKeyOf(S.type) && cfgSig(S.cfgSnap.conf) !== cfgSig(liveCfg()));
 function applyCfg(it){
   const c = (cfg().items || {})[it.cfgKey || it.id] || {};
   const o = {...it};
   if (!it.qbSet) { const d = QB_DEFAULTS[it.id]; o.code = d ? (typeof d === 'function' ? d(A()) : d) : ''; }
   const qi = qbItem(c.code || o.code);
-  if (qi && qi.price > 0 && !it.zeroOk && (c.rate == null || c.rate === '')) o.rate = qi.price;
   if (c.name && !it.cfgKey) o.name = c.name;
   if (c.code != null && c.code !== '') o.code = c.code;
   if (c.rate != null && c.rate !== '') o.rate = n0(c.rate);
@@ -905,7 +912,7 @@ const rate = it => it.custom ? n0(it.rate) : (it.id in S.rate) ? S.rate[it.id] :
 /* Lines whose locked price is different from today's price list */
 const repriced = () => allStatic().filter(it => locked(it) && !(it.id in S.rate) && S.prices[it.id] !== it.rate);
 /* Lock today's price on every line that isn't locked yet, so a saved proposal never changes price on its own */
-function lockPrices(){ S.prices = S.prices || {}; S.priceKey = S.priceKey || {}; allStatic().forEach(it => { if (!locked(it)) S.prices[it.id] = it.rate; S.priceKey[it.id] = lockKey(it); }); }
+function lockPrices(){ if (S.type && (!S.cfgSnap || S.cfgSnap.key !== cfgKeyOf(S.type))) S.cfgSnap = {key:cfgKeyOf(S.type), conf:JSON.parse(cfgSig(liveCfg()))}; S.prices = S.prices || {}; S.priceKey = S.priceKey || {}; allStatic().forEach(it => { if (!locked(it)) S.prices[it.id] = it.rate; S.priceKey[it.id] = lockKey(it); }); }
 const qty = it => it.custom ? 1 : (it.id in S.qty) ? S.qty[it.id] : (it.qty ? n0(it.qty(A())) : 1);
 const amt = it => rate(it) * qty(it);
 const label = it => cap(it.name);
@@ -1072,9 +1079,10 @@ function renderScope(){
 }
 function renderPrice(){
   $('#baseTotal').textContent = fmt(totals().base);
-  const ch = S.id ? repriced() : [], note = $('#priceNote');
+  const ch = S.id ? repriced() : [], note = $('#priceNote'), mapCh = cfgChanged();
   if (note) {
-    note.hidden = !ch.length;
+    note.hidden = !ch.length && !mapCh;
+    if (!ch.length && mapCh) note.innerHTML = `<span>This draft keeps the item list and defaults from when it was saved. An admin has changed the Logic map since then.</span> <button type="button" class="btn sm" id="usePrices">Use today's Logic map</button>`;
     if (ch.length) {
       const diff = ch.reduce((sum, it) => sum + (it.rate - S.prices[it.id]) * (st(it) === 'in' ? qty(it) : 0), 0);
       note.innerHTML = `<span>Prices are locked from when this draft was saved. ${ch.length} item${ch.length > 1 ? 's have' : ' has'} a different price in today's price list${diff ? ` (${diff > 0 ? '+' : '-'}${fmt(Math.abs(diff))} on included items)` : ''}: ${ch.slice(0, 4).map(it => esc(label(it))).join(', ')}${ch.length > 4 ? ', ...' : ''}.</span> <button type="button" class="btn sm" id="usePrices">Use today's prices</button>`;
@@ -1116,6 +1124,7 @@ function checks(){
   items().filter(i => st(i) === 'in' && i.section && !String(S.desc[i.id]||'').trim()).forEach(i => w.push(`Add a description for the ${i.name} section.`));
   S.custom.filter(c => !String(c.name).trim()).forEach(() => w.push('A custom item has no description.'));
   items().filter(i => (st(i) === 'in' || st(i) === 'add') && rate(i) === 0 && !(i.zeroOk && i.zeroOk(A()))).forEach(i => w.push(`${label(i)} has no price.`));
+  if (t.ovr && t.base > 0 && Math.abs(t.total - t.base) / t.base > 0.1) w.push(`Price on proposal (${fmt(t.total)}) is ${Math.round(Math.abs(t.total - t.base) / t.base * 100)}% ${t.total > t.base ? 'above' : 'below'} the estimate (${fmt(t.base)}). Check it's right.`);
   if (t.ovr && S.mode === 'sec' && Object.values(S.secPrice).some(Boolean) && t.total !== t.base) w.push('Price was changed by hand, so section prices no longer add up to the total.');
   return w;
 }
@@ -1255,7 +1264,7 @@ function splitToFit(body, el){
   const probe = el.cloneNode(false); body.appendChild(probe);
   let lo = 0, hi = cuts.length - 1, best = -1;
   while (lo <= hi) { const mid = (lo + hi) >> 1; probe.innerHTML = part(null, cuts[mid]); if (over()) hi = mid - 1; else { best = mid; lo = mid + 1; } }
-  if (best < 0) { body.removeChild(probe); return null; }
+  if (best < 0) { body.removeChild(probe); body.appendChild(el); return null; } /* nothing fits here: put it back whole */
   probe.innerHTML = part(null, cuts[best]);
   if (SPLITTABLE.has(el.dataset.k) && el.dataset.k !== 'li') probe.dataset.split = '1';
   const rest = el.cloneNode(false); rest.innerHTML = part(cuts[best], null); rest.dataset.cont = '1'; delete rest.dataset.keep;
@@ -1276,7 +1285,7 @@ function paginate(){
     if (!over(body)) continue;
     /* Split here if at least two lines fit at the bottom of this page */
     if (SPLITTABLE.has(blk.k) && body.children.length > 1) {
-      const room = body.clientHeight - (el.offsetTop - body.offsetTop);
+      const room = body.clientHeight - el.offsetTop; /* el.offsetTop is already measured from the top of this page's text area */
       if (room >= lineH * 2) { const rest = splitToFit(body, el); if (rest) { body = newPage(host); body.appendChild(rest); el = rest; } }
     }
     if (over(body) && body.children.length > 1) {
@@ -1371,7 +1380,7 @@ function renderMap(){
   $('#v-map').innerHTML = `<div class="panel"><h2>Logic map</h2>
     <p>Each answer sets every scope item to Included, Possible additional cost, or Excluded. Item names, codes, sections, defaults and prices set here apply to every new proposal. Prices can still be changed per proposal in Scope review.</p>
     <div class="seg" role="group" aria-label="Job type" style="margin:12px 0">${Object.entries(TYPES).filter(([x,y]) => !y.cfg).map(([x,y]) =>
-      `<button type="button" data-maptype="${x}" aria-pressed="${k===x}"${editing ? ' disabled' : ''}>${esc(y.label)}</button>`).join('')}</div>${ctrl}</div>
+      `<button type="button" data-maptype="${x}" aria-pressed="${k===x}"${editing ? ' disabled' : ''}>${esc(x === 'res' ? 'Residential (NFPA 13D and 13R)' : y.label)}</button>`).join('')}</div>${ctrl}</div>
     <datalist id="secList">${secs.map(x => `<option value="${esc(x)}">`).join('')}</datalist>
     <h3>Scope items</h3>
     <div class="tblWrap"><table class="${editing ? 'edit' : ''}"><thead><tr><th>QuickBooks item</th><th>Scope item</th><th>Section</th><th>When it shows</th><th>Price</th></tr></thead><tbody>
@@ -1391,8 +1400,13 @@ async function saveMap(){
 }
 function watchCfg(){
   ['res','com'].forEach(k => DB.collection('settings/editor/types').doc(k).onSnapshot(snap => {
-    CFG[k] = snap.exists ? {items:{}, extra:[], ...snap.data()} : {items:{}, extra:[]};
-    if (!MAPEDIT) renderMap(); renderOut();
+    const next = snap.exists ? {items:{}, extra:[], ...snap.data()} : {items:{}, extra:[]};
+    if (CFG[k] && cfgSig(CFG[k]) === cfgSig(next)) return; /* nothing changed: leave the screen alone */
+    CFG[k] = next;
+    if (!MAPEDIT) renderMap();
+    const a = document.activeElement;
+    if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && $('.builder').contains(a)) { UI.outPending = true; renderPrice(); return; } /* redraw after they leave the field */
+    renderOut();
   }, () => {}));
 }
 
@@ -1403,15 +1417,22 @@ const HOLDER = 'tab-' + Math.random().toString(36).slice(2);
 /* Proposal numbers are only handed out by the database when a draft is saved, so two people can never get the same one. */
 function autoNum(){}
 const normNum = n => String(n || '').trim().replace(/^#/, '').toLowerCase();
-async function claimNumber(){ return await DB.nextNumber(); }
+/* Take the next number; skip any that someone typed in by hand earlier */
+async function claimNumber(){
+  for (let i = 0; i < 25; i++) {
+    const n = await DB.nextNumber();
+    if (!DRAFTS.some(d => d.id !== S.id && normNum(d.num) === normNum(n)) && !(await DB.numTaken(n, S.id))) return n;
+  }
+  throw new Error('no_free_number');
+}
 /* ---------- Crash recovery: unsaved work is copied to this browser every few seconds ---------- */
 const BACKUP_KEY = 'df-unsaved-work';
 function backupNow(){
   if (!UI.dirty || UI.restoring) return;
   try { localStorage.setItem(BACKUP_KEY, JSON.stringify({at:Date.now(), id:S.id, user:AUTH.email || '', meta:UI.meta, loadedAt:UI.loadedAt, loadedVer:UI.loadedVer, num:S.job.num, customer:S.job.customer, addr:S.job.addr1, state:serial()})); } catch {}
 }
-function clearBackup(){ try { localStorage.removeItem(BACKUP_KEY); } catch {} renderRestore(null); }
-function readBackup(){ try { const b = JSON.parse(localStorage.getItem(BACKUP_KEY) || 'null'); return b && b.state && Date.now() - b.at < 14 * 864e5 ? b : null; } catch { return null; } }
+function clearBackup(){ try { const b = JSON.parse(localStorage.getItem(BACKUP_KEY) || 'null'); if (!b || (b.user || '') === (AUTH.email || '')) localStorage.removeItem(BACKUP_KEY); } catch {} renderRestore(null); }
+function readBackup(){ try { const b = JSON.parse(localStorage.getItem(BACKUP_KEY) || 'null'); return b && b.state && Date.now() - b.at < 14 * 864e5 && (b.user || '') === (AUTH.email || '') ? b : null; } catch { return null; } }
 function renderRestore(b){
   const el = $('#restoreBar'); if (!el) return;
   el.hidden = !b;
@@ -1496,7 +1517,7 @@ function renderDraftList(){
   const when = d => new Date(d.updatedAt).toLocaleString([], {month:'short', day:'numeric', year:new Date(d.updatedAt).getFullYear() === new Date().getFullYear() ? undefined : 'numeric', hour:'numeric', minute:'2-digit'});
   const li = d => `<li>
       <div class="dn"><b>${d.num ? '#' + esc(d.num) + ' ' : ''}${esc(d.name || 'Untitled proposal')}</b>
-      <span><span class="pill s-${esc(d.status || 'draft')}">${STATUS[d.status] || 'Draft'}</span> ${esc(TYPES[d.type]?.label || '')} · Updated ${esc(when(d))}${d.updatedBy ? ' by ' + esc(nameOf(d.updatedBy)) : ''}${d.createdBy ? ' · Created by ' + esc(nameOf(d.createdBy)) : ''}${d.reviewer ? ' · Reviewer: ' + esc(nameOf(d.reviewer)) : ''}${S.id===d.id?' · Open now':''}</span></div>
+      <span><span class="pill s-${esc(d.status || 'draft')}">${STATUS[d.status] || 'Draft'}</span> ${esc(TYPES[d.type]?.label || '')} · Updated ${esc(when(d))}${d.updatedBy ? ' by ' + esc(nameOf(d.updatedBy)) : ''}${d.createdBy ? ' · Created by ' + esc(nameOf(d.createdBy)) : ''}${d.reviewer ? ' · Reviewer: ' + esc(nameOf(d.reviewer)) : ''}${S.id===d.id?' · Open now':''}</span>${d.status === 'changes' && d.note ? `<span class="dnote">To change: ${esc(String(d.note).slice(0, 160))}${String(d.note).length > 160 ? '…' : ''}</span>` : ''}</div>
       <div class="dp">${fmt(d.total)}</div>
       <button class="btn" data-open="${esc(d.id)}">Open</button>
       ${canDelete() ? `<button class="btn danger" data-del="${esc(d.id)}">${confirmDel===d.id?'Confirm delete':'Delete'}</button>` : ''}</li>`;
@@ -1510,9 +1531,10 @@ function renderDraftList(){
     return;
   }
   const mine = DRAFTS.filter(d => d.status === 'review' && d.reviewer === AUTH.email);
-  const rest = DRAFTS.filter(d => !mine.includes(d));
-  box.innerHTML = `${mine.length ? `<h3 class="dh">Waiting for your review (${mine.length})</h3><ul class="dlist">${mine.map(li).join('')}</ul><h3 class="dh">All drafts</h3>` : ''}
-    ${rest.length ? `<ul class="dlist">${rest.map(li).join('')}</ul>` : (mine.length ? '' : `<div class="panel"><p>No saved drafts yet. Click "Save draft" on any proposal to keep it here.</p></div>`)}
+  const back = DRAFTS.filter(d => d.status === 'changes' && d.createdBy === AUTH.email);
+  const rest = DRAFTS.filter(d => !mine.includes(d) && !back.includes(d));
+  box.innerHTML = `${back.length ? `<h3 class="dh">Sent back to you for changes (${back.length})</h3><ul class="dlist">${back.map(li).join('')}</ul>` : ''}${mine.length ? `<h3 class="dh">Waiting for your review (${mine.length})</h3><ul class="dlist">${mine.map(li).join('')}</ul>` : ''}${(mine.length || back.length) && rest.length ? '<h3 class="dh">All drafts</h3>' : ''}
+    ${rest.length ? `<ul class="dlist">${rest.map(li).join('')}</ul>` : (mine.length || back.length ? '' : `<div class="panel"><p>No saved drafts yet. Click "Save draft" on any proposal to keep it here.</p></div>`)}
     ${DRAFTS.length >= 500 ? '<p class="small dqMore">Showing the 500 most recent drafts. Search to find older ones.</p>' : ''}`;
 }
 document.addEventListener('input', e => { if (e.target.id !== 'dqInput') return; DQ.q = e.target.value; searchServer(); });
@@ -1523,7 +1545,7 @@ document.addEventListener('click', e => {
 });
 function draftName(){ const j = S.job; return [j.customer, j.project, j.addr1].filter(Boolean).join(', ') || 'Untitled proposal'; }
 function serial(){
-  const o = {type:S.type, job:S.job, a:S.a, st:S.st, qty:S.qty, rate:S.rate, prices:S.prices, priceKey:S.priceKey, qtyBase:S.qtyBase, desc:S.desc, custom:S.custom, order:S.order, secOf:S.secOf, secLabel:S.secLabel, secPrice:S.secPrice, mode:S.mode, override:S.override, texts:S.texts};
+  const o = {type:S.type, job:S.job, a:S.a, st:S.st, qty:S.qty, rate:S.rate, prices:S.prices, priceKey:S.priceKey, qtyBase:S.qtyBase, cfgSnap:S.cfgSnap, desc:S.desc, custom:S.custom, order:S.order, secOf:S.secOf, secLabel:S.secLabel, secPrice:S.secPrice, mode:S.mode, override:S.override, texts:S.texts};
   if (UI.editing) o.editedHtml = cleanPagesHTML($('#pages').innerHTML, '__LH__');
   return o;
 }
@@ -1561,12 +1583,13 @@ async function doSave(mode){
         S.id = null; UI.loadedAt = null; UI.loadedVer = 0;
         UI.meta = {status:'draft', reviewer:'', createdBy:'', updatedBy:'', approvedBy:''};
       } else if (cur && isNewer(cur)) {
+        DRAFTS = DRAFTS.some(d => d.id === cur.id) ? DRAFTS.map(d => d.id === cur.id ? {...d, ...cur} : d) : [cur, ...DRAFTS];
         const who = cur.updatedBy === AUTH.email ? 'You (in another tab or window)' : nameOf(cur.updatedBy) || 'Someone else';
         const when = cur.updatedAt ? new Date(cur.updatedAt).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}) : 'recently';
         if (!confirm(`${who} saved changes to this draft at ${when}, after you opened it.\n\nOK = save yours anyway and replace their changes.\nCancel = don't save. You can open their version from the yellow note or Saved drafts.`)) { renderConflict(); return false; }
         force = true;
         /* Keep their review status, unless this save is the status change itself */
-        if (!statusOnly) { const cm = cleanMeta(cur); UI.meta = {...UI.meta, status:cm.status, reviewer:cm.reviewer, approvedBy:cm.approvedBy}; }
+        if (!statusOnly) { const cm = cleanMeta(cur); UI.meta = {...UI.meta, status:cm.status, reviewer:cm.reviewer, approvedBy:cm.approvedBy, note:cm.note}; }
       }
     }
     const meta = UI.meta;
@@ -1586,7 +1609,7 @@ async function doSave(mode){
     meta.updatedBy = AUTH.email;
     const ver = n0(UI.loadedVer) + 1;
     const data = {name:draftName(), num:S.job.num, customer:S.job.customer || '', addr:[S.job.addr1, S.job.addr2].filter(Boolean).join(', '), type:S.type, total:totals().total, updatedAt:new Date().toISOString(), ver, state:JSON.stringify(serial()),
-      status:meta.status, reviewer:meta.reviewer || '', createdBy:meta.createdBy || AUTH.email, updatedBy:AUTH.email, approvedBy:meta.approvedBy || ''};
+      status:meta.status, reviewer:meta.reviewer || '', createdBy:meta.createdBy || AUTH.email, updatedBy:AUTH.email, approvedBy:meta.approvedBy || '', note:meta.status === 'changes' || meta.status === 'review' ? (meta.note || '') : ''};
     if (S.id) await DB.collection('drafts').doc(S.id).set(data, force ? null : n0(UI.loadedVer));
     else { const ref = await DB.collection('drafts').add(data); S.id = ref.id; }
     UI.dirty = false; UI.savedAt = new Date(); UI.loadedAt = data.updatedAt; UI.loadedVer = ver; ok = true; clearBackup();
@@ -1643,6 +1666,10 @@ function cleanState(o){
   o.priceKey = Object.fromEntries(Object.entries(obj(o.priceKey)).map(([k, v]) => [k, String(v)]));
   o.custom = (Array.isArray(o.custom) ? o.custom : []).map(c => ({id:/^cu-[a-z0-9]{1,20}$/.test(String(c && c.id)) ? c.id : 'cu-' + uid(), code:String((c && c.code) ?? ''), name:String((c && c.name) ?? ''), rate:numOrBlank(c && c.rate)}));
   o.order = (Array.isArray(o.order) ? o.order : []).map(String);
+  o.cfgSnap = (o.cfgSnap && typeof o.cfgSnap === 'object' && ['res', 'com'].includes(o.cfgSnap.key) && o.cfgSnap.conf && typeof o.cfgSnap.conf === 'object')
+    ? {key:o.cfgSnap.key, conf:{items:obj(o.cfgSnap.conf.items), extra:(Array.isArray(o.cfgSnap.conf.extra) ? o.cfgSnap.conf.extra : []).filter(x => x && typeof x === 'object').map(x => ({id:safeId(x.id), name:String(x.name ?? ''), code:String(x.code ?? ''), rate:numOrBlank(x.rate), unit:String(x.unit ?? ''), sec:String(x.sec ?? ''), def:oneOf(x.def, STATES) || 'out'}))}} : null;
+  if (o.cfgSnap) Object.values(o.cfgSnap.conf.items).forEach(c => { if (c && typeof c === 'object') { if ('def' in c && !['auto', ...STATES].includes(c.def)) delete c.def; ['name','code','sec'].forEach(f => { if (f in c) c[f] = String(c[f]); }); } });
+
   o.mode = o.mode === 'lump' ? 'lump' : 'sec';
   const job = obj(o.job);
   ['customer','project','addr1','addr2','date','dateLabel','rev','num','dwgDate','dwgBy','dwgWord','subject','rep'].forEach(k => { if (k in job) job[k] = String(job[k] ?? ''); });
@@ -1652,7 +1679,14 @@ function cleanState(o){
   o.job = job;
   return o;
 }
-const cleanMeta = d => ({status:STATUS[d.status] ? d.status : 'draft', reviewer:String(d.reviewer || ''), createdBy:String(d.createdBy || ''), updatedBy:String(d.updatedBy || ''), approvedBy:String(d.approvedBy || '')});
+const cleanMeta = d => ({status:STATUS[d.status] ? d.status : 'draft', reviewer:String(d.reviewer || ''), createdBy:String(d.createdBy || ''), updatedBy:String(d.updatedBy || ''), approvedBy:String(d.approvedBy || ''), note:String(d.note || '').slice(0, 2000)});
+async function openDraft(id){
+  let d = null;
+  try { d = DB && DB.getDraft ? await DB.getDraft(id) : null; } catch { d = null; }
+  if (!d) d = DRAFTS.find(x => x.id === id && x.state) || (DQ.server || []).find(x => x.id === id && x.state) || null;
+  if (!d) { toast('That draft could not be opened. It may have been deleted.'); return; }
+  loadDraft(d);
+}
 function loadDraft(d){
   let o; try { o = cleanState(JSON.parse(d.state)); } catch { toast('This draft could not be opened.'); return; }
   applyDraft(o, d, cleanMeta(d));
@@ -1666,7 +1700,9 @@ function applyDraft(o, d, meta){
   UI.meta = meta;
   setEditing(false, true);
   UI.dirty = false; UI.savedAt = d.updatedAt ? new Date(d.updatedAt) : null; UI.prevQ = []; UI.numAuto = false;
-  QB.last = null; CHAT.length = 0; renderChat();
+  QB.last = null; CHAT.length = 0; renderChat(); resetCu(); UI.noteOpen = false;
+  /* Drafts saved before quantities had a base: remember the answer they were typed against */
+  S.qtyBase = S.qtyBase || {}; expand(T().I).forEach(i => { if (i.qty && i.id in S.qty && !(i.id in S.qtyBase)) S.qtyBase[i.id] = answerQty(i); });
   fillInputs(); renderAll();
   /* Reopened hand edits count as edits, so "Back to builder" asks before throwing them away */
   if (o.editedHtml) { setEditing(true); $('#pages').innerHTML = cleanPagesHTML(o.editedHtml, LH); markEditable(); fitScale(); UI.editChanged = true; checkOverflow(); checkEditPrice(); }
@@ -1816,7 +1852,7 @@ async function exportWord(){
 }
 function exportCsv(){
   flushDoc();
-  const t = totals(), q = s => `"${String(s).replace(/"/g, '""')}"`;
+  const t = totals(), q = s => { s = String(s); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return `"${s.replace(/"/g, '""')}"`; };
   const lines = [['Item','Description','Qty','Rate','Amount'].join(',')];
   t.incl.forEach(i => lines.push([q(i.code||''), q(label(i)), qty(i), rate(i).toFixed(2), amt(i).toFixed(2)].join(',')));
   if (t.ovr && t.total !== t.base) lines.push(['', q('Price adjustment'), 1, (t.total - t.base).toFixed(2), (t.total - t.base).toFixed(2)].join(','));
@@ -1952,6 +1988,7 @@ document.addEventListener('click', e => {
 document.addEventListener('input', e => { if (e.target.id === 'fbMsg') FB.msg = e.target.value; });
 document.addEventListener('submit', e => { if (e.target.id !== 'fbForm') return; e.preventDefault(); sendFeedback(); });
 document.addEventListener('mousedown', e => { if (e.target.classList && e.target.classList.contains('authModal')) closeTopModal(); });
+document.addEventListener('focusout', () => setTimeout(() => { if (UI.outPending && !(document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName) && $('.builder').contains(document.activeElement))) { UI.outPending = false; renderOut(); } }, 0));
 document.addEventListener('paste', e => {
   if (!UI.editing || !e.target.closest || !e.target.closest('#pages')) return;
   e.preventDefault();
@@ -2028,7 +2065,7 @@ document.addEventListener('click', e => {
   if (b.dataset.secmove) { moveSection(decS(b.dataset.secmove), +b.dataset.dir); renderOut(); dirty(); return; }
   if (b.dataset.secprice) { const k = decS(b.dataset.secprice); S.secPrice[k] = !S.secPrice[k]; renderOut(); dirty(); return; }
   if (b.dataset.mode) { S.mode = b.dataset.mode; renderOut(); dirty(); return; }
-  if (b.dataset.open) { const d = DRAFTS.find(x => x.id === b.dataset.open) || (DQ.server || []).find(x => x.id === b.dataset.open); if (d && (!UI.dirty || confirm('You have unsaved changes on the proposal you are working on. Open this draft and lose those changes?'))) loadDraft(d); return; }
+  if (b.dataset.open) { const d = {id:b.dataset.open}; if (d && (!UI.dirty || confirm('You have unsaved changes on the proposal you are working on. Open this draft and lose those changes?'))) openDraft(d.id); return; }
   if (b.dataset.del) {
     const id = b.dataset.del;
     if (confirmDel !== id) { confirmDel = id; renderDrafts(); return; }
@@ -2036,8 +2073,8 @@ document.addEventListener('click', e => {
     DB.collection('drafts').doc(id).delete().then(() => { if (S.id === id) { S.id = null; UI.loadedAt = null; UI.loadedVer = 0; UI.meta = {status:'draft', reviewer:'', createdBy:'', updatedBy:'', approvedBy:''}; dirty(); renderReview(); } toast('Draft deleted'); if (DQ.server) { DQ.server = DQ.server.filter(x => x.id !== id); renderDraftList(); } }).catch(() => toast('Could not delete the draft.'));
     return;
   }
-  if (b.id === 'openTheirs') { const d = DRAFTS.find(x => x.id === S.id); if (d && (!UI.dirty || confirm('Open their version? Your unsaved changes will be lost.'))) loadDraft(d); return; }
-  if (b.id === 'usePrices') { repriced().forEach(it => delete S.prices[it.id]); lockPrices(); renderOut(); dirty(); toast('Updated to today\u2019s prices. Save the draft to keep them.'); return; }
+  if (b.id === 'openTheirs') { if (!UI.dirty || confirm('Open their version? Your unsaved changes will be lost.')) openDraft(S.id); return; }
+  if (b.id === 'usePrices') { delete S.cfgSnap; repriced().forEach(it => delete S.prices[it.id]); lockPrices(); renderOut(); dirty(); toast('Updated to today\u2019s prices. Save the draft to keep them.'); return; }
   if (b.id === 'csvBtn') { exportCsv(); return; }
 });
 document.addEventListener('change', e => {
@@ -2059,7 +2096,7 @@ document.addEventListener('change', e => {
   if (el.dataset.secname) { renderScope(); return; }
   if (el.dataset.ccode) {
     const c = S.custom.find(x => x.id === el.dataset.ccode);
-    if (c) { c.code = el.value.trim(); const qi = qbItem(c.code); if (qi) { if (!String(c.name || '').trim()) c.name = qi.description || qi.name; if (c.rate === '' || c.rate == null || +c.rate === 0) c.rate = qi.price || ''; } }
+    if (c) { c.code = el.value.trim(); const qi = qbItem(c.code); if (qi && !String(c.name || '').trim()) c.name = qi.description || qi.name; } /* the price stays the proposal's own */
     renderOut(); dirty(); return;
   }
   if (el.dataset.crate) { const c = S.custom.find(x => x.id === el.dataset.crate); if (c) c.rate = el.value; renderOut(); dirty(); return; }
@@ -2109,7 +2146,7 @@ $('#newBtn').addEventListener('click', () => {
   const nb = $('#newBtn');
   if (UI.dirty && !nb.dataset.sure) { nb.dataset.sure = '1'; nb.textContent = 'Discard changes?'; setTimeout(() => { delete nb.dataset.sure; nb.textContent = 'New'; }, 3000); return; }
   delete nb.dataset.sure; nb.textContent = 'New';
-  S = freshState(); setEditing(false, true); UI.dirty = false; UI.savedAt = null; UI.loadedAt = null; UI.loadedVer = 0; QB.last = null; CHAT.length = 0; renderChat(); clearBackup(); UI.prevQ = []; UI.numAuto = true; UI.meta = {status:'draft', reviewer:'', createdBy:'', updatedBy:''}; renderReview();
+  S = freshState(); setEditing(false, true); UI.dirty = false; UI.savedAt = null; UI.loadedAt = null; UI.loadedVer = 0; QB.last = null; CHAT.length = 0; renderChat(); clearBackup(); resetCu(); UI.noteOpen = false; UI.prevQ = []; UI.numAuto = true; UI.meta = {status:'draft', reviewer:'', createdBy:'', updatedBy:''}; renderReview();
   fillInputs(); renderAll(); autoNum(); renderDrafts(); setView('build');
 });
 
@@ -2125,10 +2162,18 @@ if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => rend
 const AUTH = {sb:null, email:null, ok:false};
 function makeDB(sb){
   const subs = {drafts:[], settings:{}};
+  /* The list only needs names, numbers, totals and status, not each draft's full contents */
+  const LIGHT = 'id,num:data->>num,name:data->>name,customer:data->>customer,addr:data->>addr,type:data->>type,total:data->total,updatedAt:data->>updatedAt,updatedBy:data->>updatedBy,createdBy:data->>createdBy,status:data->>status,reviewer:data->>reviewer,approvedBy:data->>approvedBy,ver:data->ver,note:data->>note';
+  const rowOf = r => r.data ? {...r.data} : (({id, ...rest}) => ({...rest, total:Number(rest.total) || 0, ver:Number(rest.ver) || 0}))(r);
+  async function listQuery(build){
+    let res = await build(LIGHT);
+    if (res.error && /^PGRST1/.test(res.error.code || '')) res = await build('id,data'); /* older database: fall back to full rows */
+    return res;
+  }
   async function refreshDrafts(){
-    const {data, error} = await sb.from('drafts').select('id,data').order('updated_at', {ascending:false}).limit(500);
+    const {data, error} = await listQuery(cols => sb.from('drafts').select(cols).order('updated_at', {ascending:false}).limit(500));
     if (error) throw error;
-    const docs = data.map(r => ({id:r.id, data:() => r.data}));
+    const docs = data.map(r => ({id:r.id, data:() => rowOf(r)}));
     subs.drafts.forEach(f => f({docs}));
   }
   async function refreshSetting(k){
@@ -2168,19 +2213,23 @@ function makeDB(sb){
       }; } };
     },
     async searchDrafts({q, people, status, mine}){
-      let qry = sb.from('drafts').select('id,data').order('updated_at', {ascending:false}).limit(200);
-      if (status) qry = qry.eq('data->>status', status);
-      if (mine) qry = qry.eq('data->>createdBy', mine);
+      const build = cols => {
+        let qry = sb.from('drafts').select(cols).order('updated_at', {ascending:false}).limit(200);
+        if (status) qry = qry.eq('data->>status', status);
+        if (mine) qry = qry.eq('data->>createdBy', mine);
+        return filt(qry);
+      };
       /* Ask for the longest word; the app then checks every word, so "Van Horne, St" still matches */
       const t = String(q || '').replace(/["\\,()%*.]/g, ' ').split(/\s+/).filter(Boolean).sort((a, b) => b.length - a.length)[0] || '';
-      if (t) {
+      const filt = qry => {
+        if (!t) return qry;
         const like = `ilike."%${t}%"`;
         const parts = ['num', 'name', 'customer', 'addr', 'createdBy'].map(f => `data->>${f}.${like}`);
         (people || []).forEach(e => parts.push(`data->>createdBy.eq."${e}"`));
-        qry = qry.or(parts.join(','));
-      }
-      const {data, error} = await qry; if (error) throw error;
-      return (data || []).map(r => ({id:r.id, ...r.data}));
+        return qry.or(parts.join(','));
+      };
+      const {data, error} = await listQuery(build); if (error) throw error;
+      return (data || []).map(r => ({id:r.id, ...rowOf(r)}));
     },
     async getDraft(id){ const {data, error} = await sb.from('drafts').select('id,data').eq('id', id).maybeSingle(); if (error) throw error; return data ? {id:data.id, ...data.data} : null; },
     async nextNumber(){ const {data, error} = await sb.rpc('next_proposal_number'); if (error) throw error; return String(data); },
@@ -2203,6 +2252,7 @@ function renderAuth(){
   if (!AUTH.sb) { el.innerHTML = '<span class="status dirty">Database not set up</span>'; return; }
   if (AUTH.email) { el.innerHTML = `<span class="who">${esc(nameOf(AUTH.email))}${ME ? ' · ' + esc((ROLES.find(r => r[0] === roleOf()) || ['', ''])[1]) : ''}</span><button class="btn" id="signOut">Sign out</button>`; }
   else el.innerHTML = `<button class="btn primary" id="openSignIn">Sign in</button>`;
+  $('#saveBtn').hidden = !AUTH.email;
   document.querySelectorAll('.tabs [data-view="team"]').forEach(b => b.hidden = roleOf() !== 'admin' || !DB);
   renderAuthModal();
 }
@@ -2228,17 +2278,26 @@ function renderAuthModal(){
 }
 async function loadTeam(){
   const {data} = await AUTH.sb.from('team').select('email,name,role,is_admin,review_by').order('email');
-  TEAM = (data || []).map(t => ({...t, email:String(t.email).toLowerCase(), role:t.role || (t.is_admin ? 'admin' : 'estimator')}));
+  TEAM = (data || []).map(t => ({...t, raw:t.email, email:String(t.email).toLowerCase(), review_by:String(t.review_by || '').toLowerCase(), role:t.role || (t.is_admin ? 'admin' : 'estimator')}));
 }
 async function startSession(session){
+  const prevEmail = AUTH.email;
   AUTH.email = session ? session.user.email.toLowerCase() : null;
+  if (prevEmail && prevEmail !== AUTH.email) {
+    /* Signed out or switched person: keep their unsaved work in their own backup, then clear the screen */
+    if (UI.dirty) { const keep = AUTH.email; AUTH.email = prevEmail; backupNow(); AUTH.email = keep; }
+    S = freshState(); setEditing(false, true); UI.dirty = false; UI.savedAt = null; UI.loadedAt = null; UI.loadedVer = 0;
+    UI.meta = {status:'draft', reviewer:'', createdBy:'', updatedBy:'', approvedBy:''}; UI.prevQ = []; QB.last = null; CHAT.length = 0; QBITEMS = null; QBIDX = null;
+    CU.jobs = null; resetCu(); fillInputs(); renderAll(); setView('build');
+  }
   DB = null; EDITOR = false; DRAFTS = []; dbReady = false; ME = null; TEAM = [];
   if (session) {
     UI.authOpen = false;
-    const {data, error} = await AUTH.sb.from('team').select('email,name,role,is_admin,review_by').ilike('email', AUTH.email).maybeSingle();
+    /* Case-insensitive but exact: _ and % in an email are not wildcards */
+    const {data, error} = await AUTH.sb.from('team').select('email,name,role,is_admin,review_by').ilike('email', AUTH.email.replace(/[\\%_]/g, '\\$&')).limit(1).maybeSingle();
     if (error || !data) { DRAFT_ERR = 'Your email is not on the team list yet. Ask the admin to add you.'; }
     else {
-      ME = {...data, role:data.role || (data.is_admin ? 'admin' : 'estimator')};
+      ME = {...data, email:String(data.email).toLowerCase(), review_by:String(data.review_by || '').toLowerCase(), role:data.role || (data.is_admin ? 'admin' : 'estimator')};
       AUTH.ok = true; EDITOR = ME.role === 'admin'; DRAFT_ERR = '';
       await loadTeam();
       DB = makeDB(AUTH.sb); watchCfg();
@@ -2247,7 +2306,7 @@ async function startSession(session){
       }, () => { DRAFT_ERR = 'Saved drafts could not load right now.'; renderDrafts(); });
     }
   } else DRAFT_ERR = '';
-  renderAuth(); renderDrafts(); renderMap(); renderTeam(); renderReview();
+  renderAuth(); renderDrafts(); renderMap(); renderTeam(); renderReview(); renderRestore(readBackup());
   if (roleOf() !== 'admin' && document.body.dataset.view === 'team') setView('build');
 }
 async function initBackend(){
@@ -2322,9 +2381,10 @@ function renderTeam(){
       <td><select id="tmNewRole" aria-label="New role">${opts('estimator', ROLES)}</select></td><td></td><td><button class="btn primary" id="tmAdd">Add</button></td></tr>
     </tbody></table></div>` + cuMapHTML();
 }
+const rawEmail = email => (TEAM.find(t => t.email === email) || {}).raw || email;
 async function teamSave(email, patch){
-  const {error} = await AUTH.sb.from('team').update(patch).eq('email', email);
-  if (error) { toast('Could not save. Only admins can change the team.'); return; }
+  const {data, error} = await AUTH.sb.from('team').update(patch).eq('email', rawEmail(email)).select('email');
+  if (error || !data || !data.length) { toast('Could not save. Only admins can change the team.'); await loadTeam(); renderTeam(); return; }
   await loadTeam(); renderTeam(); renderAuth(); toast('Saved');
 }
 document.addEventListener('change', e => {
@@ -2346,8 +2406,8 @@ document.addEventListener('click', async e => {
     const email = d.dataset.tmdel;
     if (UI.tmDel !== email) { UI.tmDel = email; renderTeam(); return; }
     UI.tmDel = null;
-    const {error} = await AUTH.sb.from('team').delete().eq('email', email);
-    if (error) { toast('Could not remove.'); return; }
+    const {data, error} = await AUTH.sb.from('team').delete().eq('email', rawEmail(email)).select('email');
+    if (error || !data || !data.length) { toast('Could not remove. Only admins can change the team.'); return; }
     await loadTeam(); renderTeam(); toast('Removed');
   }
 });
@@ -2367,7 +2427,7 @@ function renderConflict(){
 function renderReview(){
   renderConflict();
   const el = $('#reviewBar'); if (!el) return;
-  const m = UI.meta, mine = DRAFTS.filter(d => d.status === 'review' && d.reviewer === AUTH.email).length;
+  const m = UI.meta, mine = DRAFTS.filter(d => (d.status === 'review' && d.reviewer === AUTH.email) || (d.status === 'changes' && d.createdBy === AUTH.email)).length;
   document.querySelectorAll('.tabs [data-view="drafts"]').forEach(b => b.innerHTML = `Saved drafts${mine ? ` <span class="badge">${mine}</span>` : ''}`);
   if (!S.id || !DB) { el.hidden = true; return; }
   el.hidden = false;
@@ -2375,22 +2435,38 @@ function renderReview(){
   const rev = m.reviewer ? ` · Reviewer: ${esc(nameOf(m.reviewer))}` : '';
   let actions = '';
   if (canReview() && (m.status === 'review' || m.status === 'changes')) actions += `<button class="btn primary" data-setstatus="approved">Approve</button>`;
-  if (canReview() && m.status === 'review') actions += `<button class="btn" data-setstatus="changes">Request changes</button>`;
+  if (canReview() && m.status === 'review') actions += `<button class="btn" id="askChanges">Request changes</button>`;
   if (m.status !== 'review' && m.status !== 'approved') actions += `<select id="sendTo" aria-label="Send for review to"><option value="">Send for review to...</option>${TEAM.filter(t => ['admin','manager'].includes(t.role) && t.email !== AUTH.email).map(t => `<option value="${esc(t.email)}">${esc(t.name || t.email)}</option>`).join('')}</select>`;
   if (m.status === 'approved' && canReview()) actions += `<button class="btn" data-setstatus="draft">Reopen</button>`;
-  el.innerHTML = `<span class="pill s-${esc(STATUS[m.status] ? m.status : 'draft')}">${STATUS[m.status] || 'Draft'}</span><span class="small">${who}${rev}</span><span class="rbAct">${actions}</span>`;
+  const noteHTML = m.note && (m.status === 'changes' || m.status === 'review') ? `<div class="rbNote"><b>${m.status === 'changes' ? 'Changes requested' : 'Last review note'}${m.reviewer ? ' by ' + esc(nameOf(m.reviewer)) : ''}:</b> ${esc(m.note)}</div>` : '';
+  const form = UI.noteOpen && m.status === 'review' ? `<div class="rbForm"><label class="ql" for="changeNote">What should change?</label><textarea id="changeNote" maxlength="2000" placeholder="e.g. Add the garage dry valve and recheck the head count on the 2nd floor.">${esc(UI.noteDraft || '')}</textarea>
+    <div class="row"><button class="btn primary" id="sendChanges">Send back for changes</button><button class="btn" id="cancelChanges">Cancel</button></div></div>` : '';
+  el.innerHTML = `<span class="pill s-${esc(STATUS[m.status] ? m.status : 'draft')}">${STATUS[m.status] || 'Draft'}</span><span class="small">${who}${rev}</span><span class="rbAct">${UI.noteOpen ? '' : actions}</span>${noteHTML}${form}`;
+  if (UI.noteOpen) setTimeout(() => { const t = $('#changeNote'); if (t && document.activeElement !== t) t.focus(); }, 0);
 }
-async function setStatus(status, reviewer){
+async function setStatus(status, reviewer, note){
   if (SAVING) await SAVING;
   const before = {...UI.meta};
   UI.meta.status = status;
+  if (note !== undefined) UI.meta.note = note;
+  if (status === 'approved' || status === 'draft') UI.meta.note = '';
   if (reviewer !== undefined) UI.meta.reviewer = reviewer;
   UI.meta.approvedBy = status === 'approved' ? AUTH.email : '';
   if (!(await saveDraft('status'))) { UI.meta = before; renderReview(); return; }
   if (status === 'approved' && S.job.clickup && DB) { try { await cuAttach(await makePdf(), fileBase() + ' - Approved.pdf'); } catch {} }
   toast(status === 'approved' ? 'Approved' : status === 'review' ? 'Sent for review' : status === 'changes' ? 'Sent back for changes' : 'Reopened');
 }
-document.addEventListener('click', e => { const b = e.target.closest('[data-setstatus]'); if (b) setStatus(b.dataset.setstatus); });
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-setstatus]'); if (b) { setStatus(b.dataset.setstatus); return; }
+  if (e.target.closest('#askChanges')) { UI.noteOpen = true; UI.noteDraft = ''; renderReview(); return; }
+  if (e.target.closest('#cancelChanges')) { UI.noteOpen = false; renderReview(); return; }
+  if (e.target.closest('#sendChanges')) {
+    const note = (($('#changeNote') || {}).value || '').trim();
+    if (!note) { toast('Write what should change, so they know what to fix.'); $('#changeNote') && $('#changeNote').focus(); return; }
+    UI.noteOpen = false; setStatus('changes', undefined, note);
+  }
+});
+document.addEventListener('input', e => { if (e.target.id === 'changeNote') UI.noteDraft = e.target.value; });
 document.addEventListener('change', e => { if (e.target.id === 'sendTo' && e.target.value) setStatus('review', e.target.value); });
 initBackend();
 
@@ -2574,15 +2650,16 @@ function renderCu(){
   /* Keep the search box itself (and the cursor in it); only redraw the button and the results */
   if (!$('#cuQ')) box.innerHTML = `<div class="cuFind"><input type="text" id="cuQ" placeholder="Type a ClickUp job name, or paste a task link" aria-label="ClickUp job" autocomplete="off"><button type="button" class="btn" id="cuFind"></button></div><div id="cuResWrap"></div>`;
   const btn = $('#cuFind'); btn.disabled = !!CU.busy; btn.textContent = CU.busy ? 'Looking...' : 'Find in ClickUp';
-  const hint = CU.jobs ? `<p class="small cuHint">${CU.jobs.length} open and in-progress job${CU.jobs.length === 1 ? '' : 's'} loaded. Results show as you type.</p>` : (CU.jobsLoading ? '<p class="small cuHint">Loading ClickUp jobs...</p>' : '');
+  const hint = CU.jobs ? `<p class="small cuHint">${CU.jobs.length} open and in-progress job${CU.jobs.length === 1 ? '' : 's'} loaded${CU.truncated ? ' (only the first 2,000 jobs in the list are searched)' : ''}. Results show as you type.</p>` : (CU.jobsLoading ? '<p class="small cuHint">Loading ClickUp jobs...</p>' : '');
   $('#cuResWrap').innerHTML = CU.results ? (CU.results.length ? `<ul class="cuRes">${CU.results.map(t => `<li><button type="button" class="linkbtn" data-cupick="${esc(t.id)}">${esc(t.name)}</button> <span class="small">${esc(t.status)}</span></li>`).join('')}</ul>` : '<p class="small">No open or in-progress jobs in the Proposals list match that.</p>') : hint;
 }
+function resetCu(){ CU.results = null; const q = $('#cuQ'); if (q) q.value = ''; const c = $('#cuSave'); if (c) c.checked = false; }
 /* All Open and In Progress jobs, loaded once and reused for 3 minutes */
 function cuJobs(force){
   if (!force && CU.jobs && Date.now() - CU.jobsAt < 180000) return Promise.resolve(CU.jobs);
   if (CU.jobsLoading) return CU.jobsLoading;
   CU.jobsLoading = cuCall({action:'list', statuses:CU_STATUSES})
-    .then(r => { CU.jobs = (r.tasks || []).map(t => ({id:String(t.id), name:String(t.name || ''), status:String(t.status || ''), low:String(t.name || '').toLowerCase()})); CU.jobsAt = Date.now(); return CU.jobs; })
+    .then(r => { CU.truncated = !!r.truncated; CU.jobs = (r.tasks || []).map(t => ({id:String(t.id), name:String(t.name || ''), status:String(t.status || ''), low:String(t.name || '').toLowerCase()})); CU.jobsAt = Date.now(); return CU.jobs; })
     .finally(() => { CU.jobsLoading = null; if (!$('#cuQ') || !CU.results) renderCu(); });
   renderCu();
   return CU.jobsLoading;
@@ -2795,8 +2872,8 @@ async function qbLoadItems(){
   try {
     const r = await fnCall('qbo', {action:'items'});
     QBITEMS = r.items || []; QBIDX = new Map();
-    QBITEMS.forEach(i => [i.name, i.sku].forEach(k => { if (k && !QBIDX.has(k.toLowerCase())) QBIDX.set(k.toLowerCase(), i); }));
-    const dl = $('#qbList'); if (dl) dl.innerHTML = QBITEMS.map(i => `<option value="${esc(i.name)}">${esc(i.description || '')}${i.price ? ' · ' + fmt2(i.price) : ''}</option>`).join('');
+    QBITEMS.forEach(i => [i.name, i.fqn, i.sku].forEach(k => { k = String(k || '').trim().toLowerCase(); if (k && !QBIDX.has(k)) QBIDX.set(k, i); }));
+    const dl = $('#qbList'); if (dl) dl.innerHTML = QBITEMS.map(i => `<option value="${esc(i.name)}">${esc(i.description || '')}</option>`).join('');
     renderOut(); renderMap();
   } catch { QBITEMS = null; QBIDX = null; }
 }
