@@ -5,9 +5,13 @@
 -- 1) A counter that starts at 10001
 create sequence if not exists public.proposal_number_seq start 10001;
 
--- Continue after the highest number already used, if that is above 10000
+-- Continue after the highest number already used or already handed out. Never moves backwards, even if run again.
 select setval('public.proposal_number_seq',
-  greatest(10000, coalesce((select max((data->>'num')::bigint) from public.drafts where (data->>'num') ~ '^[0-9]{1,15}$'), 0)),
+  greatest(
+    10000,
+    (select case when is_called then last_value else last_value - 1 end from public.proposal_number_seq),
+    coalesce((select max((data->>'num')::bigint) from public.drafts where (data->>'num') ~ '^[0-9]{1,15}$'), 0)
+  ),
   true);
 
 -- 2) The app asks this function for the next number when a draft is saved for the first time
