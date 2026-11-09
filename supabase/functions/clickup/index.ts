@@ -56,7 +56,7 @@ function parseTaskId(input: string): string {
 
 // Reads the Proposals list from ClickUp, 5 pages (500 tasks) at a time instead of one page after another,
 // and keeps the result for a minute so repeat searches don't go back to ClickUp.
-let CACHE: { at: number; key: string; jobs: any[] } = { at: 0, key: "", jobs: [] };
+let CACHE: { at: number; key: string; jobs: any[]; truncated?: boolean } = { at: 0, key: "", jobs: [] };
 async function loadJobs(listId: string, H: Record<string, string>, wanted: string[]) {
   const key = listId + "|" + wanted.join("|");
   if (CACHE.key === key && Date.now() - CACHE.at < 60000) return CACHE.jobs;
@@ -69,10 +69,18 @@ async function loadJobs(listId: string, H: Record<string, string>, wanted: strin
   const scan = async (byStatus: boolean) => {
     const sq = byStatus ? wanted.map((st) => `&statuses[]=${encodeURIComponent(st)}`).join("") : "";
     const out = new Map<string, any>();
-    let seen = 0;
-    for (let start = 0; start < 20; start += 5) {
+    let seen = 0, truncated = false;
+    // Page 0 first: a small list (under 100 jobs) needs just this one call
+    const first = await page(0, sq);
+    let batches: any[][] = [[first]];
+    let more = !(first.last_page || !(first.tasks || []).length);
+    for (let start = 1; more && start < 20; start += 5) {
       const batch = await Promise.all([0, 1, 2, 3, 4].map((i) => page(start + i, sq)));
-      let done = false;
+      batches.push(batch);
+      more = !batch.some((d) => d.last_page || !(d.tasks || []).length);
+      if (more && start + 5 >= 20) truncated = true;
+    }
+    for (const batch of batches) {
       for (const d of batch) {
         const tasks = d.tasks || [];
         seen += tasks.length;
@@ -80,17 +88,16 @@ async function loadJobs(listId: string, H: Record<string, string>, wanted: strin
           const status = String(t.status?.status || "").toLowerCase();
           if (wanted.includes(status)) out.set(t.id, { id: t.id, name: t.name, status: t.status?.status || "", url: t.url, custom_id: String(t.custom_id || "").toLowerCase() });
         }
-        if (d.last_page || !tasks.length) done = true;
       }
-      if (done) break;
     }
-    return { jobs: [...out.values()], seen };
+    return { jobs: [...out.values()], seen, truncated };
   };
-  let res = { jobs: [] as any[], seen: 0 };
+  let res = { jobs: [] as any[], seen: 0, truncated: false };
   try { res = await scan(true); } catch { /* fall through to a full read */ }
   // Nothing came back for those status names (they may be spelled differently in ClickUp): read the whole list and filter here
   if (!res.seen) res = await scan(false);
-  CACHE = { at: Date.now(), key, jobs: res.jobs };
+  if (res.truncated) console.warn("ClickUp Proposals list has more than 2,000 tasks; only the first 2,000 are searched");
+  CACHE = { at: Date.now(), key, jobs: res.jobs, truncated: res.truncated };
   return res.jobs;
 }
 
@@ -115,7 +122,7 @@ Deno.serve(async (req) => {
       let jobs: any[];
       try { jobs = await loadJobs(listId, H, wanted); }
       catch (e) { return json({ error: "clickup_error", detail: String(e) }, 502); }
-      if (body.action === "list") return json({ tasks: jobs });
+      if (body.action === "list") return json({ tasks: jobs, truncated: !!CACHE.truncated });
       const q = String(body.q || "").trim().toLowerCase();
       if (!q) return json({ tasks: [] });
       return json({ tasks: jobs.filter((t) => t.name.toLowerCase().includes(q) || t.id === q || t.custom_id === q).slice(0, 20) });
