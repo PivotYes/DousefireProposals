@@ -62,7 +62,10 @@ async function accessToken(force = false) {
     refresh_expires_at: t.x_refresh_token_expires_in ? new Date(now + t.x_refresh_token_expires_in * 1000).toISOString() : c.refresh_expires_at,
     updated_at: new Date().toISOString(),
   };
-  await admin.from("qbo_connection").update(upd).eq("id", 1);
+  // Intuit may replace the refresh token. If it can't be stored, the next refresh fails, so retry once and report it.
+  let { error: upErr } = await admin.from("qbo_connection").update(upd).eq("id", 1);
+  if (upErr) ({ error: upErr } = await admin.from("qbo_connection").update(upd).eq("id", 1));
+  if (upErr) console.error("Could not store the refreshed QuickBooks token", upErr.message);
   return { ...c, ...upd };
 }
 // Call the QuickBooks Accounting API, refreshing and retrying once on an auth error
@@ -92,7 +95,7 @@ function splitCity(s = "") {
 async function allItems() {
   const out: any[] = [];
   for (let start = 1; start < 10000; start += 1000) {
-    const d = await q(`select Id, Name, FullyQualifiedName, Sku, Active from Item startposition ${start} maxresults 1000`);
+    const d = await q(`select Id, Name, FullyQualifiedName, Sku, Description, Type, Active from Item startposition ${start} maxresults 1000`);
     const items = d?.QueryResponse?.Item || [];
     out.push(...items);
     if (items.length < 1000) break;
@@ -174,7 +177,8 @@ Deno.serve(async (req) => {
     if (body.action === "connect_url") {
       if (!(await can("is_admin"))) return json({ error: "admins_only" }, 403);
       const state = crypto.randomUUID();
-      await admin.from("qbo_oauth_state").insert({ state, created_by: me?.email || "" });
+      const { error: stErr } = await admin.from("qbo_oauth_state").insert({ state, created_by: me?.email || "" });
+      if (stErr) { console.error("Could not record the QuickBooks connect state", stErr.message); return json({ error: "server_error", detail: "Could not start the QuickBooks connection. Try again." }, 500); }
       const ep = await endpoints();
       const url = `${ep.auth}?` + new URLSearchParams({ client_id: Deno.env.get("QBO_CLIENT_ID")!, response_type: "code", scope: "com.intuit.quickbooks.accounting", redirect_uri: REDIRECT, state });
       return json({ url });
@@ -194,8 +198,11 @@ Deno.serve(async (req) => {
 
     if (body.action === "items") {
       const items = await allItems();
-      return json({ items: items.filter((i: any) => i.Active !== false).map((i: any) => ({ id: i.Id, name: i.Name, sku: i.Sku || "", type: i.Type || "", description: i.Description || "", price: Number(i.UnitPrice) || 0 })) });
+      return json({ items: items.filter((i: any) => i.Active !== false).map((i: any) => ({ id: i.Id, name: i.Name, fqn: i.FullyQualifiedName || "", sku: i.Sku || "", type: i.Type || "", description: i.Description || "" })) });
     }
+
+    // Customer names and addresses: only people who can send estimates may look them up
+    if ((body.action === "projects" || body.action === "preview") && !(await can("can_delete"))) return json({ error: "managers_only" }, 403);
 
     if (body.action === "projects") {
       return json({ projects: await projectsOf(String(body.customerId || "")) });
@@ -262,16 +269,25 @@ Deno.serve(async (req) => {
         TxnDate: body.txnDate || undefined,
         PrivateNote: String(body.memo || "Created by the Dousefire Proposal Builder").slice(0, 4000),
       };
-      let saved: any = null;
+      let saved: any = null, updated = false;
       if (body.estimateId) {
-        try {
-          const cur = await qbo(`/estimate/${encodeURIComponent(body.estimateId)}`);
-          saved = (await qbo("/estimate", { method: "POST", body: JSON.stringify({ ...est, Id: cur.Estimate.Id, SyncToken: cur.Estimate.SyncToken, sparse: false }) })).Estimate;
-        } catch (e) { if (!(e instanceof Fail && e.code === "qbo_error")) throw e; saved = null; }
+        let cur: any = null;
+        try { cur = await qbo(`/estimate/${encodeURIComponent(body.estimateId)}`); }
+        catch (e) {
+          // Only a deleted estimate is replaced with a new one. Any other problem is shown to the user.
+          if (!(e instanceof Fail && e.code === "qbo_error" && /not found|object not found|inactive|deleted/i.test(e.detail))) throw e;
+        }
+        if (cur?.Estimate) {
+          const status = String(cur.Estimate.TxnStatus || "");
+          if (/closed|converted/i.test(status)) throw new Fail("qbo_error", `The QuickBooks estimate is ${status}, so it can't be changed. Reopen it in QuickBooks, or unlink it to send a new one.`);
+          // sparse update: only the fields sent here change; memo, email, terms and other fields edited in QuickBooks stay
+          saved = (await qbo("/estimate", { method: "POST", body: JSON.stringify({ ...est, Id: cur.Estimate.Id, SyncToken: cur.Estimate.SyncToken, sparse: true }) })).Estimate;
+          updated = true;
+        }
       }
       if (!saved) saved = (await qbo("/estimate", { method: "POST", body: JSON.stringify(est) })).Estimate;
       return json({ id: saved.Id, docNumber: saved.DocNumber || "", total: saved.TotalAmt, url: `${WEB}/app/estimate?txnId=${saved.Id}`,
-        customer: customerName, project: projectName, projectCreated, unmatched, fallback: fallback ? fallback.Name : "", updated: !!body.estimateId });
+        customer: customerName, project: projectName, projectCreated, unmatched, fallback: fallback ? fallback.Name : "", updated });
     }
 
     return json({ error: "bad_request" }, 400);
