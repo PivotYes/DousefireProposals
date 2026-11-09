@@ -3,6 +3,8 @@
 -- What it does:
 --   * Team emails are matched exactly (no look-alike emails), and stored lower case.
 --   * Only managers and admins can approve a draft or send it back for changes.
+--   * An approved proposal can only be changed by sending it back for review first (unless you're a manager or admin).
+--   * A draft can't be saved empty or with a made-up review status.
 --   * "Created by", "Updated by" and "Approved by" are set by the database from who is signed in, so they can't be faked.
 --   * Only managers and admins can delete drafts.
 --   * Only admins can change the team list, the Logic map, and the ClickUp / QuickBooks settings.
@@ -60,6 +62,21 @@ begin
   if auth.jwt() is null or coalesce(auth.jwt() ->> 'role', '') = 'service_role' then return new; end if;
   r := public.team_role();
   if r is null then raise exception 'not_on_team'; end if;
+
+  -- The draft must be a normal draft: real contents and a known review status
+  if new.data is null or jsonb_typeof(new.data) <> 'object'
+     or coalesce(jsonb_typeof(new.data -> 'state'), '') <> 'string' or length(new.data ->> 'state') < 200 then
+    raise exception 'A draft can''t be saved without its contents.';
+  end if;
+  if new.data ? 'status' and (jsonb_typeof(new.data -> 'status') <> 'string' or new.data ->> 'status' not in ('draft', 'review', 'changes', 'approved')) then
+    raise exception 'That review status is not valid.';
+  end if;
+
+  -- An approved proposal stays as approved: estimators send it back for review to change it
+  if tg_op = 'UPDATE' and old_status = 'approved' and new_status = 'approved' and r not in ('admin', 'manager')
+     and (new.data - array['updatedAt', 'updatedBy', 'ver', 'createdBy', 'approvedBy']) is distinct from (old.data - array['updatedAt', 'updatedBy', 'ver', 'createdBy', 'approvedBy']) then
+    raise exception 'This proposal is approved. To change it, it has to go back for review first.';
+  end if;
 
   if tg_op = 'INSERT' then
     new.data := jsonb_set(new.data, '{createdBy}', to_jsonb(me));
