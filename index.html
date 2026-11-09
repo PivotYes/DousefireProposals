@@ -924,7 +924,7 @@ function totals(){
   const ovr = S.override !== '' && !isNaN(+S.override);
   return {incl, base, total: ovr ? +S.override : base, ovr};
 }
-function dirty(){ UI.dirty = true; renderStatus(); }
+function dirty(){ UI.dirty = true; UI.rev = (UI.rev || 0) + 1; renderStatus(); }
 function setState(it, ns){ if (!it.custom && ns === it.def(A())) delete S.st[it.id]; else S.st[it.id] = ns; UI.flash = it.id; }
 function moveItem(id, dir){
   const full = items(), it = full.find(i => i.id === id); if (!it) return;
@@ -1426,13 +1426,32 @@ async function claimNumber(){
   throw new Error('no_free_number');
 }
 /* ---------- Crash recovery: unsaved work is copied to this browser every few seconds ---------- */
-const BACKUP_KEY = 'df-unsaved-work';
+const BACKUP_PREFIX = 'df-unsaved-work';
+let NEW_ID = 'new-' + uid();                       /* this tab's unsaved new proposal */
+const BACKUP_NEW = () => BACKUP_PREFIX + ':' + NEW_ID;
+const backupKey = () => BACKUP_PREFIX + ':' + (S.id || NEW_ID);
 function backupNow(){
   if (!UI.dirty || UI.restoring) return;
-  try { localStorage.setItem(BACKUP_KEY, JSON.stringify({at:Date.now(), id:S.id, user:AUTH.email || '', meta:UI.meta, loadedAt:UI.loadedAt, loadedVer:UI.loadedVer, num:S.job.num, customer:S.job.customer, addr:S.job.addr1, state:serial()})); } catch {}
+  try { localStorage.setItem(backupKey(), JSON.stringify({at:Date.now(), id:S.id, user:AUTH.email || '', meta:UI.meta, loadedAt:UI.loadedAt, loadedVer:UI.loadedVer, num:S.job.num, customer:S.job.customer, addr:S.job.addr1, state:serial()})); } catch {}
 }
-function clearBackup(){ try { const b = JSON.parse(localStorage.getItem(BACKUP_KEY) || 'null'); if (!b || (b.user || '') === (AUTH.email || '')) localStorage.removeItem(BACKUP_KEY); } catch {} renderRestore(null); }
-function readBackup(){ try { const b = JSON.parse(localStorage.getItem(BACKUP_KEY) || 'null'); return b && b.state && Date.now() - b.at < 14 * 864e5 && (b.user || '') === (AUTH.email || '') ? b : null; } catch { return null; } }
+function dropBackup(key){ try { const b = JSON.parse(localStorage.getItem(key) || 'null'); if (!b || (b.user || '') === (AUTH.email || '')) localStorage.removeItem(key); } catch {} }
+/* After a save (or Discard): remove this proposal's backup, plus the "new proposal" one it came from */
+function clearBackup(extra){ dropBackup(backupKey()); if (extra) dropBackup(extra); renderRestore(readBackup()); }
+/* The most recent backup that belongs to this person, other than the proposal open right now */
+function readBackup(){
+  let best = null;
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i); if (!key || !key.startsWith(BACKUP_PREFIX)) continue;
+      let b; try { b = JSON.parse(localStorage.getItem(key) || 'null'); } catch { continue; }
+      if (!b || !b.state) continue;
+      if (Date.now() - b.at > 14 * 864e5) { localStorage.removeItem(key); i--; continue; }
+      if ((b.user || '') !== (AUTH.email || '') || key === backupKey()) continue;
+      if (!best || b.at > best.at) best = {...b, key};
+    }
+  } catch {}
+  return best;
+}
 function renderRestore(b){
   const el = $('#restoreBar'); if (!el) return;
   el.hidden = !b;
@@ -1442,19 +1461,20 @@ function renderRestore(b){
 }
 function restoreBackup(){
   const b = readBackup(); if (!b) return;
-  let o; try { o = cleanState(JSON.parse(JSON.stringify(b.state))); } catch { clearBackup(); return; }
+  let o; try { o = cleanState(JSON.parse(JSON.stringify(b.state))); } catch { dropBackup(b.key); renderRestore(readBackup()); return; }
   UI.restoring = true;
   applyDraft(o, {id:b.id, updatedAt:b.loadedAt, ver:b.loadedVer}, cleanMeta(b.meta || {}));
   UI.restoring = false;
-  dirty(); renderRestore(null);
+  if (!b.id) NEW_ID = 'new-' + uid();
+  dropBackup(b.key); dirty(); backupNow(); renderRestore(readBackup());
   toast('Unsaved work restored. Click Save draft to keep it.');
 }
 setInterval(backupNow, 4000);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') backupNow(); });
 window.addEventListener('pagehide', backupNow);
 document.addEventListener('click', e => {
-  if (e.target.closest('#restoreYes')) { if (!UI.dirty || confirm('Replace what is on screen with the unsaved work?')) restoreBackup(); return; }
-  if (e.target.closest('#restoreNo')) { clearBackup(); toast('Discarded.'); }
+  if (e.target.closest('#restoreYes')) { if (!UI.dirty || confirm('Replace what is on screen with the unsaved work?')) whenSaved().then(restoreBackup); return; }
+  if (e.target.closest('#restoreNo')) { const b = readBackup(); if (b) dropBackup(b.key); renderRestore(readBackup()); toast('Discarded.'); }
 });
 
 /* ---------- Saved drafts: search and quick filters ---------- */
@@ -1517,7 +1537,7 @@ function renderDraftList(){
   const when = d => new Date(d.updatedAt).toLocaleString([], {month:'short', day:'numeric', year:new Date(d.updatedAt).getFullYear() === new Date().getFullYear() ? undefined : 'numeric', hour:'numeric', minute:'2-digit'});
   const li = d => `<li>
       <div class="dn"><b>${d.num ? '#' + esc(d.num) + ' ' : ''}${esc(d.name || 'Untitled proposal')}</b>
-      <span><span class="pill s-${esc(d.status || 'draft')}">${STATUS[d.status] || 'Draft'}</span> ${esc(TYPES[d.type]?.label || '')} · Updated ${esc(when(d))}${d.updatedBy ? ' by ' + esc(nameOf(d.updatedBy)) : ''}${d.createdBy ? ' · Created by ' + esc(nameOf(d.createdBy)) : ''}${d.reviewer ? ' · Reviewer: ' + esc(nameOf(d.reviewer)) : ''}${S.id===d.id?' · Open now':''}</span>${d.status === 'changes' && d.note ? `<span class="dnote">To change: ${esc(String(d.note).slice(0, 160))}${String(d.note).length > 160 ? '…' : ''}</span>` : ''}</div>
+      <span><span class="pill s-${esc(isStatus(d.status) ? d.status : 'draft')}">${statusLabel(d.status)}</span> ${esc((typeof d.type === 'string' && Object.hasOwn(TYPES, d.type)) ? TYPES[d.type].label : '')} · Updated ${esc(when(d))}${d.updatedBy ? ' by ' + esc(nameOf(d.updatedBy)) : ''}${d.createdBy ? ' · Created by ' + esc(nameOf(d.createdBy)) : ''}${d.reviewer ? ' · Reviewer: ' + esc(nameOf(d.reviewer)) : ''}${S.id===d.id?' · Open now':''}</span>${d.status === 'changes' && d.note ? `<span class="dnote">To change: ${esc(String(d.note).slice(0, 160))}${String(d.note).length > 160 ? '…' : ''}</span>` : ''}</div>
       <div class="dp">${fmt(d.total)}</div>
       <button class="btn" data-open="${esc(d.id)}">Open</button>
       ${canDelete() ? `<button class="btn danger" data-del="${esc(d.id)}">${confirmDel===d.id?'Confirm delete':'Delete'}</button>` : ''}</li>`;
@@ -1559,17 +1579,26 @@ function saveDraft(mode){
 }
 /* Someone else saved since this draft was opened? Uses a version number, not the computer's clock */
 const isNewer = cur => (n0(cur.ver) !== n0(UI.loadedVer)) || (!n0(cur.ver) && !!UI.loadedAt && !!cur.updatedAt && cur.updatedAt !== UI.loadedAt);
+/* Wait for a running save before switching proposals or people */
+async function whenSaved(){ if (SAVING) { toast('Finishing the save first...'); try { await SAVING; } catch {} } }
 async function doSave(mode){
   const statusOnly = mode === 'status';
+  if (!mode && S.id && !UI.dirty && DB) { toast('No changes to save.'); return true; }
+  const doc = S;                     /* the proposal this save belongs to */
+  const still = () => S === doc;     /* still on screen? */
   if (!DB) { toast(AUTH.email ? 'Your email is not on the team list yet. Ask the admin to add you.' : 'Sign in to save drafts.'); return false; }
   flushDoc();
   UI.saving = true; renderStatus();
   let ok = false;
   try {
+    const cleanNum = String(S.job.num || '').trim().replace(/^#\s*/, '');
+    if (cleanNum !== String(S.job.num || '')) { S.job.num = cleanNum; $('#j-num').value = cleanNum; }
     const typed = normNum(S.job.num);
     if (typed) {
       const local = DRAFTS.some(d => d.id !== S.id && normNum(d.num) === typed);
-      if (local || await DB.numTaken(String(S.job.num).trim().replace(/^#/, ''), S.id)) {
+      const taken = local || await DB.numTaken(String(S.job.num).trim().replace(/^#/, ''), S.id);
+      if (!still()) return false;
+      if (taken) {
         toast(`Proposal #${String(S.job.num).trim()} is already used by another draft. Clear the number to get a new one, or use a different number.`);
         return false;
       }
@@ -1578,6 +1607,7 @@ async function doSave(mode){
     let force = false;
     if (S.id && DB.getDraft) {
       let cur; try { cur = await DB.getDraft(S.id); } catch { cur = undefined; }
+      if (!still()) return false;
       if (cur === null) {
         if (!confirm('This draft was deleted by someone else while you were working on it. Save your version as a new draft?')) return false;
         S.id = null; UI.loadedAt = null; UI.loadedVer = 0;
@@ -1599,10 +1629,13 @@ async function doSave(mode){
       meta.status = meta.reviewer ? 'review' : 'draft'; meta.approvedBy = '';
     }
     if (!typed) {
-      S.job.num = await claimNumber(); $('#j-num').value = S.job.num; UI.numAuto = false;
+      const n = await claimNumber();
+      if (!still()) return false;
+      S.job.num = n; $('#j-num').value = S.job.num; UI.numAuto = false;
       if (!UI.editing) renderDoc(true);
       else document.querySelectorAll('#pages [data-k="re"] span:last-child').forEach(sp => { if (!/Proposal #/.test(sp.textContent)) sp.insertAdjacentText('afterbegin', `Proposal #${S.job.num}${S.job.rev ? ' Rev-' + S.job.rev : ''}   `); });
     }
+    if (!still()) return false;       /* they switched proposals while we were checking: don't save the wrong one */
     if (S.type) lockPrices();
     if (!S.id) { meta.createdBy = AUTH.email; if (ME && ME.review_by && meta.status === 'draft') { meta.status = 'review'; meta.reviewer = ME.review_by; } }
     else if (meta.status === 'changes' && meta.createdBy === AUTH.email && meta.reviewer && !statusOnly) meta.status = 'review';
@@ -1610,16 +1643,24 @@ async function doSave(mode){
     const ver = n0(UI.loadedVer) + 1;
     const data = {name:draftName(), num:S.job.num, customer:S.job.customer || '', addr:[S.job.addr1, S.job.addr2].filter(Boolean).join(', '), type:S.type, total:totals().total, updatedAt:new Date().toISOString(), ver, state:JSON.stringify(serial()),
       status:meta.status, reviewer:meta.reviewer || '', createdBy:meta.createdBy || AUTH.email, updatedBy:AUTH.email, approvedBy:meta.approvedBy || '', note:meta.status === 'changes' || meta.status === 'review' ? (meta.note || '') : ''};
+    const revAtSave = UI.rev || 0, wasNew = !S.id;
     if (S.id) await DB.collection('drafts').doc(S.id).set(data, force ? null : n0(UI.loadedVer));
-    else { const ref = await DB.collection('drafts').add(data); S.id = ref.id; }
-    UI.dirty = false; UI.savedAt = new Date(); UI.loadedAt = data.updatedAt; UI.loadedVer = ver; ok = true; clearBackup();
+    else { const ref = await DB.collection('drafts').add(data); doc.id = ref.id; }
+    ok = true;
+    if (still()) {
+      UI.savedAt = new Date(); UI.loadedAt = data.updatedAt; UI.loadedVer = ver;
+      if ((UI.rev || 0) === revAtSave) { UI.dirty = false; clearBackup(wasNew ? BACKUP_NEW() : null); }  /* edits typed during the save stay "unsaved" */
+      else { UI.dirty = true; if (wasNew) dropBackup(BACKUP_NEW()); }
+    }
     if (!mode) toast(meta.status === 'review' && meta.reviewer ? `Draft saved and sent to ${nameOf(meta.reviewer)} for review` : 'Draft saved');
   } catch (e) {
-    toast(e && e.code === 'conflict' ? 'Someone saved this draft at the same moment. Click Save again to see their changes first.'
+    /* Messages from the database rules (security.sql) are shown as they are */
+    if (e && e.code === 'P0001') toast(e.message === 'not_on_team' ? 'Your email is not on the team list, so this could not be saved.' : String(e.message || 'The database refused this change.'));
+    else toast(e && e.code === 'conflict' ? 'Someone saved this draft at the same moment. Click Save again to see their changes first.'
       : e && e.code === '23505' ? `Proposal #${S.job.num} is already used by another draft. Clear the number to get a new one.`
       : e && e.code === 'not_granted' ? 'You do not have permission to save drafts here.' : 'Could not save the draft. Check your connection and try again.');
   } finally {
-    UI.saving = false; renderStatus(); renderDrafts(); renderReview(); renderPrice(); renderChecks();
+    UI.saving = false; renderStatus(); renderDrafts(); if (still()) { renderReview(); renderPrice(); renderChecks(); }
   }
   return ok;
 }
@@ -1643,7 +1684,7 @@ function cleanRiser(r){
 }
 function cleanState(o){
   o = (o && typeof o === 'object') ? o : {};
-  o.type = TYPES[o.type] ? o.type : null;
+  o.type = (typeof o.type === 'string' && Object.hasOwn(TYPES, o.type)) ? o.type : null;
   const a = o.a && typeof o.a === 'object' ? o.a : {};
   Object.keys(TYPES).forEach(k => {
     const ans = a[k] && typeof a[k] === 'object' ? a[k] : {}; a[k] = ans;
@@ -1671,6 +1712,11 @@ function cleanState(o){
   if (o.cfgSnap) Object.values(o.cfgSnap.conf.items).forEach(c => { if (c && typeof c === 'object') { if ('def' in c && !['auto', ...STATES].includes(c.def)) delete c.def; ['name','code','sec'].forEach(f => { if (f in c) c[f] = String(c[f]); }); } });
 
   o.mode = o.mode === 'lump' ? 'lump' : 'sec';
+  const strMap = m => Object.fromEntries(Object.entries(obj(m)).filter(([, v]) => v != null && typeof v !== 'object').map(([k, v]) => [k, String(v)]));
+  o.texts = Object.fromEntries(Object.keys(DEFAULT_TEXTS).map(k => [k, typeof obj(o.texts)[k] === 'string' ? o.texts[k] : DEFAULT_TEXTS[k]]));
+  o.secOf = strMap(o.secOf); o.secLabel = strMap(o.secLabel); o.desc = strMap(o.desc);
+  o.secPrice = Object.fromEntries(Object.entries(obj(o.secPrice)).map(([k, v]) => [k, v === true]));
+  o.override = (o.override === '' || o.override == null || isNaN(+o.override)) ? '' : String(+o.override);
   const job = obj(o.job);
   ['customer','project','addr1','addr2','date','dateLabel','rev','num','dwgDate','dwgBy','dwgWord','subject','rep'].forEach(k => { if (k in job) job[k] = String(job[k] ?? ''); });
   if (job.dateLabel && !['eff', 'rev'].includes(job.dateLabel)) job.dateLabel = 'eff';
@@ -1679,8 +1725,11 @@ function cleanState(o){
   o.job = job;
   return o;
 }
-const cleanMeta = d => ({status:STATUS[d.status] ? d.status : 'draft', reviewer:String(d.reviewer || ''), createdBy:String(d.createdBy || ''), updatedBy:String(d.updatedBy || ''), approvedBy:String(d.approvedBy || ''), note:String(d.note || '').slice(0, 2000)});
+const isStatus = v => typeof v === 'string' && Object.hasOwn(STATUS, v);
+const statusLabel = v => isStatus(v) ? STATUS[v] : 'Draft';
+const cleanMeta = d => ({status:isStatus(d.status) ? d.status : 'draft', reviewer:String(d.reviewer || ''), createdBy:String(d.createdBy || ''), updatedBy:String(d.updatedBy || ''), approvedBy:String(d.approvedBy || ''), note:String(d.note || '').slice(0, 2000)});
 async function openDraft(id){
+  await whenSaved();
   let d = null;
   try { d = DB && DB.getDraft ? await DB.getDraft(id) : null; } catch { d = null; }
   if (!d) d = DRAFTS.find(x => x.id === id && x.state) || (DQ.server || []).find(x => x.id === id && x.state) || null;
@@ -1807,7 +1856,7 @@ function drawPageText(pdf, page, k){
     const t = pdfSafe(w.t); if (!t) return;
     /* Measure the way the PDF draws it (no letter-pair kerning), then nudge letter spacing so each word fills the same width as on screen */
     const real = pdf.getStringUnitWidth(t, {kerning:{}}) * pdf.getFontSize() / pdf.internal.scaleFactor, want = w.w * k;
-    const lim = w.fs * k * 0.1, cs = t.length > 1 ? Math.max(-lim, Math.min(lim, (want - real) / (t.length - 1))) : 0;
+    const lim = w.fs * k * 0.1, cs = (t.length > 1 && !/[^\x20-\x7e]/.test(t)) ? Math.max(-lim, Math.min(lim, (want - real) / (t.length - 1))) : 0;
     pdf.text(t, w.x * k, base(w) * k, Math.abs(cs) > 0.01 ? {baseline:'alphabetic', charSpace:cs} : {baseline:'alphabetic'});
   });
   pdf.setDrawColor(0, 0, 0);
@@ -2070,7 +2119,7 @@ document.addEventListener('click', e => {
     const id = b.dataset.del;
     if (confirmDel !== id) { confirmDel = id; renderDrafts(); return; }
     confirmDel = null;
-    DB.collection('drafts').doc(id).delete().then(() => { if (S.id === id) { S.id = null; UI.loadedAt = null; UI.loadedVer = 0; UI.meta = {status:'draft', reviewer:'', createdBy:'', updatedBy:'', approvedBy:''}; dirty(); renderReview(); } toast('Draft deleted'); if (DQ.server) { DQ.server = DQ.server.filter(x => x.id !== id); renderDraftList(); } }).catch(() => toast('Could not delete the draft.'));
+    DB.collection('drafts').doc(id).delete().then(() => { if (S.id === id) { S.id = null; UI.loadedAt = null; UI.loadedVer = 0; UI.meta = {status:'draft', reviewer:'', createdBy:'', updatedBy:'', approvedBy:''}; dirty(); renderReview(); } toast('Draft deleted'); if (DQ.server) { DQ.server = DQ.server.filter(x => x.id !== id); renderDraftList(); } }).catch(err => toast(err && err.code === 'not_deleted' ? 'The draft was not deleted. Only managers and admins can delete drafts.' : err && err.code === 'P0001' ? String(err.message) : 'Could not delete the draft. Check your connection and try again.'));
     return;
   }
   if (b.id === 'openTheirs') { if (!UI.dirty || confirm('Open their version? Your unsaved changes will be lost.')) openDraft(S.id); return; }
@@ -2142,11 +2191,13 @@ $('#pdfBtn').addEventListener('click', e => busy(e.currentTarget, exportPdf));
 $('#wordBtn').addEventListener('click', e => busy(e.currentTarget, exportWord));
 $('#printBtn').addEventListener('click', () => { flushDoc(); try { window.print(); } catch { toast('Printing is blocked here. Use Download PDF.'); } });
 $('#saveBtn').addEventListener('click', () => saveDraft());
-$('#newBtn').addEventListener('click', () => {
+$('#newBtn').addEventListener('click', async () => {
   const nb = $('#newBtn');
+  if (SAVING) { await whenSaved(); }
+  const discardKey = backupKey();
   if (UI.dirty && !nb.dataset.sure) { nb.dataset.sure = '1'; nb.textContent = 'Discard changes?'; setTimeout(() => { delete nb.dataset.sure; nb.textContent = 'New'; }, 3000); return; }
   delete nb.dataset.sure; nb.textContent = 'New';
-  S = freshState(); setEditing(false, true); UI.dirty = false; UI.savedAt = null; UI.loadedAt = null; UI.loadedVer = 0; QB.last = null; CHAT.length = 0; renderChat(); clearBackup(); resetCu(); UI.noteOpen = false; UI.prevQ = []; UI.numAuto = true; UI.meta = {status:'draft', reviewer:'', createdBy:'', updatedBy:''}; renderReview();
+  S = freshState(); setEditing(false, true); UI.dirty = false; UI.savedAt = null; UI.loadedAt = null; UI.loadedVer = 0; QB.last = null; CHAT.length = 0; renderChat(); dropBackup(discardKey); clearBackup(); NEW_ID = 'new-' + uid(); resetCu(); UI.noteOpen = false; UI.prevQ = []; UI.numAuto = true; UI.meta = {status:'draft', reviewer:'', createdBy:'', updatedBy:''}; renderReview();
   fillInputs(); renderAll(); autoNum(); renderDrafts(); setView('build');
 });
 
@@ -2204,7 +2255,12 @@ function makeDB(sb){
             }
             refreshDrafts().catch(() => {});
           },
-          async delete(){ const {error} = await sb.from('drafts').delete().eq('id', id); if (error) throw error; refreshDrafts().catch(() => {}); }
+          async delete(){
+            const {data, error} = await sb.from('drafts').delete().eq('id', id).select('id');
+            if (error) throw error;
+            if (!data || !data.length) { const e = new Error('not_deleted'); e.code = 'not_deleted'; throw e; }
+            refreshDrafts().catch(() => {});
+          }
         }; }
       };
       return { doc(k){ return {
@@ -2234,9 +2290,11 @@ function makeDB(sb){
     async getDraft(id){ const {data, error} = await sb.from('drafts').select('id,data').eq('id', id).maybeSingle(); if (error) throw error; return data ? {id:data.id, ...data.data} : null; },
     async nextNumber(){ const {data, error} = await sb.rpc('next_proposal_number'); if (error) throw error; return String(data); },
     async numTaken(num, id){
-      let q = sb.from('drafts').select('id').eq('data->>num', num).limit(1);
+      const want = normNum(num); if (!want) return false;
+      let q = sb.from('drafts').select('id,num:data->>num').ilike('data->>num', '%' + want.replace(/[\\%_]/g, '\\$&') + '%').limit(50);
       if (id) q = q.neq('id', id);
-      const {data, error} = await q; if (error) return false; return !!(data && data.length);
+      const {data, error} = await q; if (error) return false;
+      return (data || []).some(r => normNum(r.num) === want);
     }
   };
   return api;
@@ -2281,6 +2339,7 @@ async function loadTeam(){
   TEAM = (data || []).map(t => ({...t, raw:t.email, email:String(t.email).toLowerCase(), review_by:String(t.review_by || '').toLowerCase(), role:t.role || (t.is_admin ? 'admin' : 'estimator')}));
 }
 async function startSession(session){
+  await whenSaved();
   const prevEmail = AUTH.email;
   AUTH.email = session ? session.user.email.toLowerCase() : null;
   if (prevEmail && prevEmail !== AUTH.email) {
@@ -2290,7 +2349,7 @@ async function startSession(session){
     UI.meta = {status:'draft', reviewer:'', createdBy:'', updatedBy:'', approvedBy:''}; UI.prevQ = []; QB.last = null; CHAT.length = 0; QBITEMS = null; QBIDX = null;
     CU.jobs = null; resetCu(); fillInputs(); renderAll(); setView('build');
   }
-  DB = null; EDITOR = false; DRAFTS = []; dbReady = false; ME = null; TEAM = [];
+  DB = null; EDITOR = false; DRAFTS = []; dbReady = false; ME = null; TEAM = []; MAPEDIT = null; mapType = null;
   if (session) {
     UI.authOpen = false;
     /* Case-insensitive but exact: _ and % in an email are not wildcards */
@@ -2312,14 +2371,21 @@ async function startSession(session){
 async function initBackend(){
   if (!window.supabase || !SUPABASE_URL.startsWith('https://') || SUPABASE_ANON_KEY.includes('PASTE')) { renderAuth(); renderDrafts(); return; }
   AUTH.sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  /* Supabase reports the same sign-in more than once (on load, and when the tab comes back into view).
+     Start a session once per person; later reports for the same person reuse it. */
+  let current = null;
+  const begin = s => {
+    const em = s && s.user ? String(s.user.email || '').toLowerCase() : null;
+    if (current && current.em === em) return current.p;
+    current = {em, p:startSession(s)};
+    return current.p;
+  };
   AUTH.sb.auth.onAuthStateChange((ev, s) => {
     if (ev === 'PASSWORD_RECOVERY') { AUTHMODE = 'newpass'; AUTHMSG = ''; renderAuthModal(); return; }
-    /* Supabase reports SIGNED_IN again whenever the tab comes back into view. Same person: nothing to do. */
-    if (ev === 'SIGNED_IN' && s && DB && AUTH.email === String(s.user.email || '').toLowerCase()) return;
-    if (ev === 'SIGNED_IN' || ev === 'SIGNED_OUT') startSession(s);
+    if (ev === 'SIGNED_IN' || ev === 'SIGNED_OUT' || ev === 'INITIAL_SESSION') begin(s);
   });
   const {data:{session}} = await AUTH.sb.auth.getSession();
-  await startSession(session);
+  await begin(session);
 }
 document.addEventListener('submit', async e => {
   if (e.target.id !== 'authForm') return;
@@ -2340,6 +2406,8 @@ document.addEventListener('submit', async e => {
         if (/registered|exists/i.test(error.message)) { AUTHMODE = 'forgot'; return done('This email already has an account. Send yourself a reset link to set a password.'); }
         return done(error.message);
       }
+      /* Supabase answers an existing account with an empty user instead of an error */
+      if (data && data.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) { AUTHMODE = 'forgot'; return done('This email already has an account. Send yourself a reset link to set a new password.'); }
       if (!data.session) return done('Account created. Check your email and click the confirmation link, then come back and sign in.');
       AUTHMSG = '';
     } else if (AUTHMODE === 'forgot') {
@@ -2430,6 +2498,7 @@ function renderReview(){
   const m = UI.meta, mine = DRAFTS.filter(d => (d.status === 'review' && d.reviewer === AUTH.email) || (d.status === 'changes' && d.createdBy === AUTH.email)).length;
   document.querySelectorAll('.tabs [data-view="drafts"]').forEach(b => b.innerHTML = `Saved drafts${mine ? ` <span class="badge">${mine}</span>` : ''}`);
   if (!S.id || !DB) { el.hidden = true; return; }
+  if (UI.noteOpen && $('#changeNote')) return;   /* keep the note box (and the cursor) as it is */
   el.hidden = false;
   const who = m.createdBy ? `Created by ${esc(nameOf(m.createdBy))}` : '';
   const rev = m.reviewer ? ` · Reviewer: ${esc(nameOf(m.reviewer))}` : '';
@@ -2441,7 +2510,7 @@ function renderReview(){
   const noteHTML = m.note && (m.status === 'changes' || m.status === 'review') ? `<div class="rbNote"><b>${m.status === 'changes' ? 'Changes requested' : 'Last review note'}${m.reviewer ? ' by ' + esc(nameOf(m.reviewer)) : ''}:</b> ${esc(m.note)}</div>` : '';
   const form = UI.noteOpen && m.status === 'review' ? `<div class="rbForm"><label class="ql" for="changeNote">What should change?</label><textarea id="changeNote" maxlength="2000" placeholder="e.g. Add the garage dry valve and recheck the head count on the 2nd floor.">${esc(UI.noteDraft || '')}</textarea>
     <div class="row"><button class="btn primary" id="sendChanges">Send back for changes</button><button class="btn" id="cancelChanges">Cancel</button></div></div>` : '';
-  el.innerHTML = `<span class="pill s-${esc(STATUS[m.status] ? m.status : 'draft')}">${STATUS[m.status] || 'Draft'}</span><span class="small">${who}${rev}</span><span class="rbAct">${UI.noteOpen ? '' : actions}</span>${noteHTML}${form}`;
+  el.innerHTML = `<span class="pill s-${esc(isStatus(m.status) ? m.status : 'draft')}">${statusLabel(m.status)}</span><span class="small">${who}${rev}</span><span class="rbAct">${UI.noteOpen ? '' : actions}</span>${noteHTML}${form}`;
   if (UI.noteOpen) setTimeout(() => { const t = $('#changeNote'); if (t && document.activeElement !== t) t.focus(); }, 0);
 }
 async function setStatus(status, reviewer, note){
@@ -2530,6 +2599,7 @@ function applyFill(r){
 async function sendChat(){
   const inp = $('#chatInput'), text = inp.value.trim();
   if (!text || !DB || UI.chatBusy) return;
+  const doc = S;
   CHAT.push({role:'user', content:text}); inp.value = ''; UI.chatBusy = true; renderChat();
   $('#chatSend').textContent = 'Reading...';
   try {
@@ -2540,6 +2610,8 @@ async function sendChat(){
     if (error || !data || data.error) {
       const code = data && data.error;
       CHAT.push({role:'assistant', content: code === 'not_on_team' ? 'Your email is not on the team list yet.' : code === 'missing_key' ? 'The AI key is not set up yet in Supabase.' : 'Something went wrong. Try again in a moment.'});
+    } else if (S !== doc) {
+      toast('You switched proposals while the AI was reading, so nothing was filled in. Ask again on this one.');
     } else {
       applyFill(data);
       CHAT.push({role:'assistant', content:data.reply || 'Filled in what I could. Check the questions below.'});
