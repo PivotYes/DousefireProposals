@@ -9,7 +9,9 @@ ClickUp and QuickBooks connections, Send feedback, and an admin-editable logic m
 - `supabase/functions/clickup/index.ts`: Edge Function `clickup`. Finds Open and In Progress jobs in the ClickUp Proposals list, reads their fields, saves proposal files to the job.
 - `supabase/functions/feedback/index.ts`: Edge Function `feedback`. Saves feedback and emails it to the office.
 - `supabase/feedback.sql`: run once in the Supabase SQL Editor. Creates the `feedback` table.
-- The `qbo` Edge Function and the original `setup.sql` live in Supabase only. Add them here as a backup.
+- `supabase/proposal-numbers.sql`: run in the SQL Editor. Proposal numbers from 10001, never reused.
+- `supabase/security.sql`: run in the SQL Editor. The database enforces roles: who can approve, delete, and change the team, Logic map and settings.
+- `qbo`: Edge Function `qbo` (QuickBooks). The `qbo-callback` function and the original `setup.sql` live in Supabase only. Add them here as a backup.
 
 ## Supabase secrets (Edge Functions > Secrets)
 - `CLICKUP_TOKEN`, `CLICKUP_LIST_ID`: ClickUp connection.
