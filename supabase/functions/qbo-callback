@@ -26,8 +26,8 @@ Deno.serve(async (req) => {
 
     const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
     // CSRF check: the state must be one we created in the last 15 minutes
-    const { data: st } = await admin.from("qbo_oauth_state").select("*").eq("state", state).maybeSingle();
-    await admin.from("qbo_oauth_state").delete().eq("state", state);
+    // One step: remove the state and get it back, so the same code can never be used twice
+    const { data: st } = await admin.from("qbo_oauth_state").delete().eq("state", state).select("*").maybeSingle();
     if (!st || Date.now() - new Date(st.created_at).getTime() > 15 * 60 * 1000) return back("expired");
 
     const basic = btoa(`${Deno.env.get("QBO_CLIENT_ID")}:${Deno.env.get("QBO_CLIENT_SECRET")}`);
