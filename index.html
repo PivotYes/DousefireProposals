@@ -987,6 +987,19 @@ function risersUI(a){
     ${r.kind === 'comb' ? `<span class="mini">Floor control assembly size</span>${segs('data-rs', r.id, 'fcvSize', [['1½','1½"'],['2','2"'],['2½','2½"'],['3','3"'],['4','4"']], r.fcvSize)}` : ''}
   </div>`).join('') + `<button type="button" class="btn sm" id="addRiser">+ Add riser</button>`;
 }
+/* After a section is redrawn, put keyboard focus back on the same control */
+const FOCUS_ATTRS = ['data-toggle','data-addc','data-hide','data-reset','data-mv','data-secmove','data-dir','data-secprice','data-secsel','data-secname','data-q','data-v','data-m','data-ah','data-ar','data-rs','data-f','data-v2','data-cname','data-crate','data-ccode','data-cdel','data-rate','data-qty','data-desc','data-addhead','data-delhead','data-delarea','data-delriser','data-toggle2'];
+function focusKey(root){
+  const a = document.activeElement; if (!a || !root.contains(a) || a === root) return null;
+  if (a.id) return '#' + CSS.escape(a.id);
+  const parts = FOCUS_ATTRS.filter(n => a.hasAttribute(n)).map(n => `[${n}="${CSS.escape(a.getAttribute(n))}"]`);
+  return parts.length ? a.tagName.toLowerCase() + parts.join('') : (a.className && a.tagName === 'BUTTON' && a.id === '' ? null : null);
+}
+function restoreFocus(root, key, sel){
+  if (!key) return;
+  const el = root.querySelector(key); if (!el) return;
+  try { el.focus({preventScroll:true}); if (sel != null && el.setSelectionRange) el.setSelectionRange(sel, sel); } catch {}
+}
 function renderQ(){
   if (!S.type) { $('#questions').innerHTML = '<p class="hint">Choose Residential or Commercial in Job details to start.</p>'; UI.prevQ = []; return; }
   const act = document.activeElement, actId = act && act.id, sel = act && act.selectionStart;
@@ -995,6 +1008,7 @@ function renderQ(){
   const newIds = vis.map(q => q.id).filter(id => !UI.prevQ.includes(id));
   UI.prevQ = vis.map(q => q.id);
   const segBtn = (q, v, l, on, attr = 'data-v') => `<button type="button" data-q="${q.id}" ${attr}="${v}" aria-pressed="${on}">${esc(l)}</button>`;
+  const qKey = focusKey($('#questions'));
   $('#questions').innerHTML = vis.map(q => {
     let ctl, lab = `<span class="ql">${esc(q.label)}</span>`;
     if (q.type === 'number') { lab = `<label class="ql" for="q-${q.id}">${esc(q.label)}</label>`; ctl = `<input type="number" inputmode="numeric" id="q-${q.id}" min="0" data-q="${q.id}" value="${esc(a[q.id])}">`; }
@@ -1008,6 +1022,7 @@ function renderQ(){
     return `<div class="q${q.show?' follow':''}${!first && newIds.includes(q.id)?' new':''}">${lab}${ctl}</div>`;
   }).join('');
   if (actId) { const el = document.getElementById(actId); if (el && el !== act) { el.focus(); try { if (sel != null) el.setSelectionRange(sel, sel); } catch {} } }
+  else if (qKey) restoreFocus($('#questions'), qKey);
 }
 function row(it){
   const s = st(it), on = s === 'in' || s === 'add';
@@ -1074,7 +1089,9 @@ function renderScope(){
     h += `<details class="hid"${hid.length ? '' : ''}><summary>${head('hide', 'Hidden from proposal', hid.length)}</summary><ul class="items">${hid.map(row).join('') || '<li class="empty">Nothing hidden.</li>'}</ul></details>`;
   }
   const wasOpen = $('#scope details.hid')?.open;
+  const sKey = focusKey($('#scope')), sAct = document.activeElement, sSel = sAct && typeof sAct.selectionStart === 'number' ? sAct.selectionStart : null;
   $('#scope').innerHTML = h;
+  restoreFocus($('#scope'), sKey, sSel);
   if (wasOpen) $('#scope details.hid').open = true;
   UI.flash = null;
 }
@@ -1343,6 +1360,8 @@ function fitScale(){
 }
 new ResizeObserver(fitScale).observe($('#pagesScroll'));
 
+/* The signed-in email, safe to call while the page is still starting up */
+const signedInEmail = () => { try { return AUTH.email || null; } catch { return null; } };
 /* ---------- Logic map ---------- */
 const DEF_OPTS = [['auto','Follows answers'],['in','Always included'],['add','Possible additional cost'],['out','Excluded'],['hide','Hidden']];
 let EDITOR = false, MAPEDIT = null, mapType = null;
@@ -1374,7 +1393,7 @@ function renderMap(){
       <td>${defSel(`data-mx="${x.id}" data-f="def"`, x.def, false)}</td>
       <td><input type="number" min="0" step="any" data-mx="${x.id}" data-f="rate" value="${esc(x.rate)}" aria-label="Price"><input type="text" data-mx="${x.id}" data-f="unit" value="${esc(x.unit || '')}" placeholder="unit, e.g. head" aria-label="Unit" class="small-in"></td></tr>`
     : `<tr class="chg"><td>${esc(x.code)}</td><td>${esc(cap(x.name))}</td><td>${esc(x.sec || SEC_INST)}</td><td><span class="rule">${esc(DEF_OPTS.find(o => o[0] === (x.def || 'out'))[1])}</span></td><td>${x.rate ? fmt2(x.rate) + (x.unit ? ' per ' + esc(x.unit) : '') : ''}</td></tr>`;
-  const ctrl = !DB ? '<p class="small">Sign in to edit the logic map.</p>'
+  const ctrl = !DB ? `<p class="small">${signedInEmail() ? 'Your email is not on the team list yet. Ask an admin to add you.' : 'Sign in to edit the logic map.'}</p>`
     : !EDITOR ? '<p class="small">Only admins can change items. Ask an admin to make changes, or to make you an admin.</p>'
     : editing ? `<div class="bar"><button class="btn primary" id="mapSave">Save changes</button><button class="btn" id="mapCancel">Cancel</button><button class="btn" id="mapAdd">+ Add item</button></div>`
     : `<div class="bar"><button class="btn primary" id="mapEdit">Edit items</button></div>`;
@@ -1581,6 +1600,8 @@ function saveDraft(mode){
 /* Someone else saved since this draft was opened? Uses a version number, not the computer's clock */
 const isNewer = cur => (n0(cur.ver) !== n0(UI.loadedVer)) || (!n0(cur.ver) && !!UI.loadedAt && !!cur.updatedAt && cur.updatedAt !== UI.loadedAt);
 /* Wait for a running save before switching proposals or people */
+/* Network calls during a save stop waiting after 30 seconds; the work stays on screen, marked unsaved */
+const timed = (p, ms = 30000) => Promise.race([p, new Promise((_, rej) => setTimeout(() => { const e = new Error('timeout'); e.code = 'timeout'; rej(e); }, ms))]);
 async function whenSaved(){ if (SAVING) { toast('Finishing the save first...'); try { await SAVING; } catch {} } }
 async function doSave(mode){
   const statusOnly = mode === 'status';
@@ -1598,7 +1619,7 @@ async function doSave(mode){
     const typed = normNum(S.job.num);
     if (typed) {
       const local = DRAFTS.some(d => d.id !== S.id && normNum(d.num) === typed);
-      const taken = local || await DB.numTaken(String(S.job.num).trim().replace(/^#/, ''), S.id);
+      const taken = local || await timed(DB.numTaken(String(S.job.num).trim().replace(/^#/, ''), S.id), 15000).catch(() => false);
       if (!still()) return false;
       if (taken) {
         toast(`Proposal #${String(S.job.num).trim()} is already used by another draft. Clear the number to get a new one, or use a different number.`);
@@ -1608,7 +1629,8 @@ async function doSave(mode){
     const m = UI.meta;
     let force = false;
     if (S.id && DB.getDraft) {
-      let cur; try { cur = await DB.getDraft(S.id); } catch { cur = undefined; }
+      let cur; UI.curVer = 0; try { cur = await timed((DB.getMeta || DB.getDraft).call(DB, S.id), 15000); } catch { cur = undefined; }
+      if (cur) UI.curVer = n0(cur.ver);
       if (!still()) return false;
       if (cur === null) {
         if (!confirm('This draft was deleted by someone else while you were working on it. Save your version as a new draft?')) return false;
@@ -1631,7 +1653,7 @@ async function doSave(mode){
       meta.status = meta.reviewer ? 'review' : 'draft'; meta.approvedBy = '';
     }
     if (!typed) {
-      const n = await claimNumber();
+      const n = await timed(claimNumber());
       if (!still()) return false;
       S.job.num = n; $('#j-num').value = S.job.num; UI.numAuto = false;
       if (!UI.editing) renderDoc(true);
@@ -1639,25 +1661,28 @@ async function doSave(mode){
     }
     if (!still()) return false;       /* they switched proposals while we were checking: don't save the wrong one */
     if (S.type) lockPrices();
-    if (!S.id) { meta.createdBy = AUTH.email; if (ME && ME.review_by && meta.status === 'draft') { meta.status = 'review'; meta.reviewer = ME.review_by; } }
+    const canRev = e => TEAM.some(t => t.email === e && ['admin', 'manager'].includes(t.role));
+    let noReviewer = false;
+    if (!S.id) { meta.createdBy = AUTH.email; if (ME && ME.review_by && meta.status === 'draft') { if (canRev(ME.review_by)) { meta.status = 'review'; meta.reviewer = ME.review_by; } else noReviewer = true; } }
     else if (meta.status === 'changes' && meta.createdBy === AUTH.email && meta.reviewer && !statusOnly) meta.status = 'review';
     meta.updatedBy = AUTH.email;
-    const ver = n0(UI.loadedVer) + 1;
+    const ver = Math.max(n0(UI.loadedVer), n0(UI.curVer)) + 1;  /* after "save anyway", go past their version too */
     const data = {name:draftName(), num:S.job.num, customer:S.job.customer || '', addr:[S.job.addr1, S.job.addr2].filter(Boolean).join(', '), type:S.type, total:totals().total, updatedAt:new Date().toISOString(), ver, state:JSON.stringify(serial()),
-      status:meta.status, reviewer:meta.reviewer || '', createdBy:meta.createdBy || AUTH.email, updatedBy:AUTH.email, approvedBy:meta.approvedBy || '', note:meta.status === 'changes' || meta.status === 'review' ? (meta.note || '') : ''};
+      status:meta.status, reviewer:meta.reviewer || '', createdBy:meta.createdBy || AUTH.email, updatedBy:AUTH.email, approvedBy:meta.approvedBy || '', note:meta.status === 'changes' || meta.status === 'review' ? (meta.note || '') : '', noteBy:meta.status === 'changes' || meta.status === 'review' ? (meta.noteBy || '') : ''};
     const revAtSave = UI.rev || 0, wasNew = !S.id;
-    if (S.id) await DB.collection('drafts').doc(S.id).set(data, force ? null : n0(UI.loadedVer));
-    else { const ref = await DB.collection('drafts').add(data); doc.id = ref.id; }
+    if (S.id) await timed(DB.collection('drafts').doc(S.id).set(data, force ? null : n0(UI.loadedVer)));
+    else { const ref = await timed(DB.collection('drafts').add(data)); doc.id = ref.id; }
     ok = true;
     if (still()) {
       UI.savedAt = new Date(); UI.loadedAt = data.updatedAt; UI.loadedVer = ver;
       if ((UI.rev || 0) === revAtSave) { UI.dirty = false; clearBackup(wasNew ? BACKUP_NEW() : null); }  /* edits typed during the save stay "unsaved" */
       else { UI.dirty = true; if (wasNew) dropBackup(BACKUP_NEW()); }
     }
-    if (!mode) toast(meta.status === 'review' && meta.reviewer ? `Draft saved and sent to ${nameOf(meta.reviewer)} for review` : 'Draft saved');
+    if (!mode) toast(noReviewer ? 'Draft saved. Your usual reviewer can no longer review, so pick one from "Send for review to..."' : meta.status === 'review' && meta.reviewer ? `Draft saved and sent to ${nameOf(meta.reviewer)} for review` : 'Draft saved');
   } catch (e) {
     /* Messages from the database rules (security.sql) are shown as they are */
     if (e && e.code === 'P0001') toast(e.message === 'not_on_team' ? 'Your email is not on the team list, so this could not be saved.' : String(e.message || 'The database refused this change.'));
+    else if (e && e.code === 'timeout') toast('Saving is taking too long. Check your connection. Your work is still here, so try Save again.');
     else toast(e && e.code === 'conflict' ? 'Someone saved this draft at the same moment. Click Save again to see their changes first.'
       : e && e.code === '23505' ? `Proposal #${S.job.num} is already used by another draft. Clear the number to get a new one.`
       : e && e.code === 'not_granted' ? 'You do not have permission to save drafts here.' : 'Could not save the draft. Check your connection and try again.');
@@ -1729,14 +1754,27 @@ function cleanState(o){
 }
 const isStatus = v => typeof v === 'string' && Object.hasOwn(STATUS, v);
 const statusLabel = v => isStatus(v) ? STATUS[v] : 'Draft';
-const cleanMeta = d => ({status:isStatus(d.status) ? d.status : 'draft', reviewer:String(d.reviewer || ''), createdBy:String(d.createdBy || ''), updatedBy:String(d.updatedBy || ''), approvedBy:String(d.approvedBy || ''), note:String(d.note || '').slice(0, 2000)});
-async function openDraft(id){
+const cleanMeta = d => ({status:isStatus(d.status) ? d.status : 'draft', reviewer:String(d.reviewer || ''), createdBy:String(d.createdBy || ''), updatedBy:String(d.updatedBy || ''), approvedBy:String(d.approvedBy || ''), note:String(d.note || '').slice(0, 2000), noteBy:String(d.noteBy || '')});
+async function openDraft(id, discardKey){
   await whenSaved();
   let d = null;
   try { d = DB && DB.getDraft ? await DB.getDraft(id) : null; } catch { d = null; }
   if (!d) d = DRAFTS.find(x => x.id === id && x.state) || (DQ.server || []).find(x => x.id === id && x.state) || null;
   if (!d) { toast('That draft could not be opened. It may have been deleted.'); return; }
+  if (discardKey) dropBackup(discardKey);        /* the person chose to throw those changes away */
+  keepBackupOf(d.id);                            /* unsaved work for this draft stays restorable */
   loadDraft(d);
+}
+/* Before a draft opens, move its crash backup aside, so the first edit can't overwrite it. It's then offered with "Restore it". */
+function keepBackupOf(id){
+  if (!id) return;
+  try {
+    const key = BACKUP_PREFIX + ':' + id, raw = localStorage.getItem(key); if (!raw) return;
+    const b = JSON.parse(raw);
+    if ((b.user || '') !== (AUTH.email || '')) return;
+    localStorage.setItem(BACKUP_PREFIX + ':kept-' + id + '-' + Date.now(), raw);
+    localStorage.removeItem(key);
+  } catch {}
 }
 function loadDraft(d){
   let o; try { o = cleanState(JSON.parse(d.state)); } catch { toast('This draft could not be opened.'); return; }
@@ -1757,7 +1795,7 @@ function applyDraft(o, d, meta){
   fillInputs(); renderAll();
   /* Reopened hand edits count as edits, so "Back to builder" asks before throwing them away */
   if (o.editedHtml) { setEditing(true); $('#pages').innerHTML = cleanPagesHTML(o.editedHtml, LH); markEditable(); fitScale(); UI.editChanged = true; checkOverflow(); checkEditPrice(); }
-  setView('build'); renderReview();
+  setView('build'); renderReview(); renderRestore(readBackup());
 }
 /* database starts in initBackend() */
 
@@ -1768,20 +1806,22 @@ const LIBS = {
   docx:'https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.js'
 };
 function fileBase(){ const j = S.job; return ('Dousefire Proposal ' + (j.num ? j.num + ' ' : '') + (j.customer || j.addr1 || '') + (j.rev ? ' Rev-' + j.rev : '')).trim().replace(/[\\/:*?"<>|]+/g, '').slice(0, 80); }
-async function offer(filename, data){
-  const blob = data instanceof Blob ? data : new Blob([data], {type: filename.endsWith('.csv') ? 'text/csv' : 'application/octet-stream'});
+async function offer(filename, data, quiet){
+  /* CSV starts with a byte-order mark so Excel reads ½, dashes and accents correctly */
+  const blob = data instanceof Blob ? data : new Blob([filename.endsWith('.csv') ? '\ufeff' + data : data], {type: filename.endsWith('.csv') ? 'text/csv;charset=utf-8' : 'application/octet-stream'});
   const url = URL.createObjectURL(blob), a = document.createElement('a');
   a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 4000);
-  toast('Downloaded ' + filename);
+  if (!quiet) toast('Downloaded ' + filename);
 }
+const droppedMsg = () => PDF_DROPPED.size ? ` These characters can't be shown in the PDF and were left out: ${[...PDF_DROPPED].slice(0, 8).join(' ')}. Download Word to keep them.` : '';
 async function busy(btn, fn){ const t = btn.textContent; btn.disabled = true; btn.textContent = 'Preparing...'; try { await fn(); } catch (e) { console.error(e); toast('Something went wrong preparing the file.'); } btn.disabled = false; btn.textContent = t; }
 async function exportPdf(){
   PDF_DROPPED = new Set();
   const blob = await makePdf();
-  await offer(fileBase() + '.pdf', blob);
-  if (PDF_DROPPED.size) toast(`These characters can't be shown in the PDF and were left out: ${[...PDF_DROPPED].slice(0, 8).join(' ')}. Download Word to keep them.`);
-  if (cuAuto()) await cuAttach(blob, fileBase() + '.pdf');
+  await offer(fileBase() + '.pdf', blob, true);
+  const cu = cuAuto() ? await cuAttach(blob, fileBase() + '.pdf') : null;
+  toast(`Downloaded ${fileBase()}.pdf.${cu === true ? ' Also saved to ClickUp.' : cu === false ? ' It could not be saved to ClickUp: ' + CU.lastErr : ''}${droppedMsg()}`);
 }
 /* Real-text PDF: the letterhead is drawn as the page background, then every word is placed exactly where the preview shows it.
    Text stays sharp when printed and can be searched and copied. */
@@ -1898,8 +1938,9 @@ async function exportWord(){
   const img = Uint8Array.from(atob(LH.split(',')[1]), c => c.charCodeAt(0));
   const {cover, body} = docModel();
   const blob = await D.Packer.toBlob(buildDocx(D, cover, body, img));
-  await offer(fileBase() + '.docx', blob);
-  if (cuAuto()) await cuAttach(blob, fileBase() + '.docx');
+  await offer(fileBase() + '.docx', blob, true);
+  const cu = cuAuto() ? await cuAttach(blob, fileBase() + '.docx') : null;
+  toast(`Downloaded ${fileBase()}.docx.${cu === true ? ' Also saved to ClickUp.' : cu === false ? ' It could not be saved to ClickUp: ' + CU.lastErr : ''}`);
 }
 function exportCsv(){
   flushDoc();
@@ -1913,6 +1954,7 @@ function exportCsv(){
 /* ---------- Edit mode ---------- */
 /* Hand-edited pages are stored as HTML. Only keep the tags and attributes the proposal uses, so a saved draft can never run code for the next person who opens it. */
 const SAFE_TAGS = new Set(['DIV','P','SPAN','B','STRONG','U','I','EM','BR','IMG']);
+const LETTER_CLASSES = new Set(['pw', 'page', 'lh', 'pb', 'cvw', 'ph']);
 const SAFE_ATTRS = new Set(['class','data-k','data-keep','data-cont','data-split']);
 function cleanPagesHTML(html, imgSrc){
   const t = document.createElement('template'); t.innerHTML = String(html || '');
@@ -1924,7 +1966,8 @@ function cleanPagesHTML(html, imgSrc){
       walk(n); n.replaceWith(...n.childNodes); return;
     }
     if (n.tagName === 'IMG' && !n.classList.contains('lh')) { n.remove(); return; }
-    [...n.attributes].forEach(a => { if (!SAFE_ATTRS.has(a.name) || (a.name === 'class' && !/^[\w\s-]*$/.test(a.value))) n.removeAttribute(a.name); });
+    [...n.attributes].forEach(a => { if (!SAFE_ATTRS.has(a.name)) n.removeAttribute(a.name); });
+    if (n.hasAttribute('class')) { const keep = n.getAttribute('class').split(/\s+/).filter(c => LETTER_CLASSES.has(c)); if (keep.length) n.setAttribute('class', keep.join(' ')); else n.removeAttribute('class'); }
     if (n.tagName === 'IMG') { n.setAttribute('src', imgSrc); n.setAttribute('alt', ''); }
     walk(n);
   });
@@ -1976,6 +2019,25 @@ window.addEventListener('scroll', () => document.body.classList.toggle('scrolled
   };
   window.addEventListener('scroll', mark, {passive:true}); mark();
 })();
+/* While a pop-up is open, everything behind it is out of reach (mouse and keyboard). Focus returns to where it was. */
+const MODALS = ['#authModal', '#qbModal', '#fbModal'];
+function syncModals(){
+  const open = MODALS.some(sel => { const m = $(sel); return m && !m.hidden; });
+  if (open === !!UI.modalOpen) return;
+  UI.modalOpen = open;
+  ['.top', 'main', '#v-drafts', '#v-map', '#v-team', '#fbOpen'].forEach(sel => document.querySelectorAll(sel).forEach(el => { el.inert = open; }));
+  if (open) { UI.modalReturn = document.activeElement; setTimeout(() => { const m = MODALS.map(s => $(s)).find(x => x && !x.hidden); const f = m && m.querySelector('input,textarea,select,button'); if (f && !m.contains(document.activeElement)) f.focus(); }, 0); }
+  else { const r = UI.modalReturn; UI.modalReturn = null; if (r && document.contains(r) && r.focus) setTimeout(() => r.focus(), 0); if (UI.editing) $('.builder').inert = true; }
+}
+new MutationObserver(syncModals).observe(document.body, {subtree:true, attributes:true, attributeFilter:['hidden']});
+document.addEventListener('keydown', e => {
+  const tab = e.target.closest && e.target.closest('.tabs [role="tab"]'); if (!tab) return;
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+  const tabs = [...document.querySelectorAll('.tabs [role="tab"]')].filter(t => !t.hidden);
+  let i = tabs.indexOf(tab);
+  i = e.key === 'Home' ? 0 : e.key === 'End' ? tabs.length - 1 : (i + (e.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+  e.preventDefault(); tabs[i].focus(); tabs[i].click();
+});
 /* Escape key or a click on the dark background closes a pop-up */
 function closeTopModal(){
   if (!$('#qbModal').hidden && typeof QBP !== 'undefined' && QBP) { if (QBP.sending) return true; QBP = null; renderQbModal(); return true; }
@@ -2050,6 +2112,7 @@ function markEditable(){ $('#pages').querySelectorAll('.pb, .cvw').forEach(e => 
 function setEditing(on, silent){
   UI.editing = on; UI.editChanged = false;
   document.body.classList.toggle('editing', on);
+  const bld = $('.builder'); if (bld) bld.inert = on;   /* the builder can't be reached by keyboard while editing the text */
   $('#editBtn').textContent = on ? 'Back to builder' : 'Edit text';
   markEditable();
   if (!on && !silent) renderDoc(true);
@@ -2083,14 +2146,14 @@ document.addEventListener('click', e => {
   if (b.id === 'mapAdd') { MAPEDIT.extra.push({id:'x-' + uid(), name:'', code:'', rate:'', unit:'', sec:SEC_INST, def:'out'}); renderMap(); return; }
   if (b.dataset.mxdel) { MAPEDIT.extra = MAPEDIT.extra.filter(x => x.id !== b.dataset.mxdel); renderMap(); return; }
   if (b.dataset.type) { S.type = b.dataset.type; UI.prevQ = []; renderAll(); dirty(); return; }
-  if (b.dataset.q && b.dataset.v) { A()[b.dataset.q] = A()[b.dataset.q] === b.dataset.v ? '' : b.dataset.v; renderQ(); renderOut(); dirty(); return; }
+  if (b.dataset.q && b.dataset.v) { A()[b.dataset.q] = A()[b.dataset.q] === b.dataset.v ? '' : b.dataset.v; clearAnswerQty(); renderQ(); renderOut(); dirty(); return; }
   if (b.dataset.q && b.dataset.m) {
     const arr = A()[b.dataset.q] = [...(A()[b.dataset.q] || [])], i = arr.indexOf(b.dataset.m);
     if (i >= 0) arr.splice(i, 1); else arr.push(b.dataset.m);
     if (b.dataset.q === 'bfaParts' && arr.length && arr.every(x => x === 'fee')) {
       arr.length = 0; if (i < 0) { toast('Check Fire or Domestic first. The RCDOH fee can\u2019t be on its own.'); }
     }
-    if (b.dataset.q === 'floors') clearAnswerQty();
+    clearAnswerQty();
     renderQ(); renderOut(); dirty(); return;
   }
   if (b.dataset.addhead) { const ar = A().areas.find(x => x.id === b.dataset.addhead); if (ar) { normArea(ar); ar.heads.push(newHead()); } renderQ(); renderOut(); dirty(); return; }
@@ -2116,15 +2179,15 @@ document.addEventListener('click', e => {
   if (b.dataset.secmove) { moveSection(decS(b.dataset.secmove), +b.dataset.dir); renderOut(); dirty(); return; }
   if (b.dataset.secprice) { const k = decS(b.dataset.secprice); S.secPrice[k] = !S.secPrice[k]; renderOut(); dirty(); return; }
   if (b.dataset.mode) { S.mode = b.dataset.mode; renderOut(); dirty(); return; }
-  if (b.dataset.open) { const d = {id:b.dataset.open}; if (d && (!UI.dirty || confirm('You have unsaved changes on the proposal you are working on. Open this draft and lose those changes?'))) openDraft(d.id); return; }
+  if (b.dataset.open) { const d = {id:b.dataset.open}; if (d && (!UI.dirty || confirm('You have unsaved changes on the proposal you are working on. Open this draft and lose those changes?'))) openDraft(d.id, UI.dirty ? backupKey() : null); return; }
   if (b.dataset.del) {
     const id = b.dataset.del;
-    if (confirmDel !== id) { confirmDel = id; renderDrafts(); return; }
+    if (confirmDel !== id) { confirmDel = id; renderDrafts(); clearTimeout(UI.delT); UI.delT = setTimeout(() => { if (confirmDel === id) { confirmDel = null; renderDrafts(); } }, 4000); return; }
     confirmDel = null;
     DB.collection('drafts').doc(id).delete().then(() => { if (S.id === id) { S.id = null; UI.loadedAt = null; UI.loadedVer = 0; UI.meta = {status:'draft', reviewer:'', createdBy:'', updatedBy:'', approvedBy:''}; dirty(); renderReview(); } toast('Draft deleted'); if (DQ.server) { DQ.server = DQ.server.filter(x => x.id !== id); renderDraftList(); } }).catch(err => toast(err && err.code === 'not_deleted' ? (canDelete() ? 'The database did not allow the delete. Run the latest security.sql in Supabase, then try again.' : 'The draft was not deleted. Only managers and admins can delete drafts.') : err && err.code === 'P0001' ? String(err.message) : 'Could not delete the draft. Check your connection and try again.'));
     return;
   }
-  if (b.id === 'openTheirs') { if (!UI.dirty || confirm('Open their version? Your unsaved changes will be lost.')) openDraft(S.id); return; }
+  if (b.id === 'openTheirs') { if (!UI.dirty || confirm('Open their version? Your unsaved changes will be lost.')) openDraft(S.id, backupKey()); return; }
   if (b.id === 'usePrices') { delete S.cfgSnap; repriced().forEach(it => delete S.prices[it.id]); lockPrices(); renderOut(); dirty(); toast('Updated to today\u2019s prices. Save the draft to keep them.'); return; }
   if (b.id === 'csvBtn') { exportCsv(); return; }
 });
@@ -2203,7 +2266,7 @@ $('#newBtn').addEventListener('click', async () => {
     locked.forEach(el => { el.inert = true; }); document.body.classList.add('waiting');
     let saved = false;
     try { toast('Finishing the save first...'); saved = await SAVING; } catch { saved = false; }
-    finally { UI.newPending = false; nb.disabled = false; nb.textContent = 'New'; locked.forEach(el => { el.inert = false; }); document.body.classList.remove('waiting'); }
+    finally { UI.newPending = false; nb.disabled = false; nb.textContent = 'New'; locked.forEach(el => { el.inert = (el === $('.builder') && UI.editing); }); document.body.classList.remove('waiting'); }
     /* The save didn't go through: keep the work on screen. Starting over takes a fresh New click and a confirm. */
     if (UI.dirty) { delete nb.dataset.sure; toast(saved ? 'You made changes while it was saving. Save again to keep them, or click New twice to discard them.' : 'The save did not go through, so your work is still here. Save again, or click New twice to discard it.'); return; }
   }
@@ -2227,7 +2290,7 @@ const AUTH = {sb:null, email:null, ok:false};
 function makeDB(sb){
   const subs = {drafts:[], settings:{}};
   /* The list only needs names, numbers, totals and status, not each draft's full contents */
-  const LIGHT = 'id,num:data->>num,name:data->>name,customer:data->>customer,addr:data->>addr,type:data->>type,total:data->total,updatedAt:data->>updatedAt,updatedBy:data->>updatedBy,createdBy:data->>createdBy,status:data->>status,reviewer:data->>reviewer,approvedBy:data->>approvedBy,ver:data->ver,note:data->>note';
+  const LIGHT = 'id,num:data->>num,name:data->>name,customer:data->>customer,addr:data->>addr,type:data->>type,total:data->total,updatedAt:data->>updatedAt,updatedBy:data->>updatedBy,createdBy:data->>createdBy,status:data->>status,reviewer:data->>reviewer,approvedBy:data->>approvedBy,ver:data->ver,note:data->>note,noteBy:data->>noteBy';
   const rowOf = r => r.data ? {...r.data} : (({id, ...rest}) => ({...rest, total:Number(rest.total) || 0, ver:Number(rest.ver) || 0}))(r);
   async function listQuery(build){
     let res = await build(LIGHT);
@@ -2300,6 +2363,10 @@ function makeDB(sb){
       const {data, error} = await listQuery(build); if (error) throw error;
       return (data || []).map(r => ({id:r.id, ...rowOf(r)}));
     },
+    async getMeta(id){
+      const {data, error} = await listQuery(cols => sb.from('drafts').select(cols).eq('id', id).limit(1));
+      if (error) throw error; return data && data.length ? {id:data[0].id, ...rowOf(data[0])} : null;
+    },
     async getDraft(id){ const {data, error} = await sb.from('drafts').select('id,data').eq('id', id).maybeSingle(); if (error) throw error; return data ? {id:data.id, ...data.data} : null; },
     async nextNumber(){ const {data, error} = await sb.rpc('next_proposal_number'); if (error) throw error; return String(data); },
     async numTaken(num, id){
@@ -2343,7 +2410,7 @@ function renderAuthModal(){
   if (AUTHMODE === 'forgot') body = `<p class="small">We'll email you a link to set a new password.</p>${email}<button class="btn primary" type="submit">Send reset link</button>
     <p class="small"><button type="button" class="linkbtn" data-authmode="signin">Back to sign in</button></p>`;
   if (AUTHMODE === 'newpass') body = `${pass('au-pass', 'New password (8+ characters)', 'new-password')}${pass('au-pass2', 'Confirm password', 'new-password')}<button class="btn primary" type="submit">Save password</button>`;
-  m.innerHTML = `<form class="authCard" id="authForm"><div class="authTop"><h2>${title}</h2>${AUTHMODE === 'newpass' ? '' : '<button type="button" class="linkbtn" id="closeAuth" aria-label="Close">Close</button>'}</div>
+  m.innerHTML = `<form class="authCard" id="authForm" role="dialog" aria-modal="true" aria-labelledby="authTitle"><div class="authTop"><h2 id="authTitle">${title}</h2>${AUTHMODE === 'newpass' ? '' : '<button type="button" class="linkbtn" id="closeAuth" aria-label="Close">Close</button>'}</div>
     ${AUTHMSG ? `<p class="authMsg">${esc(AUTHMSG)}</p>` : ''}${body}</form>`;
   const f = m.querySelector('input'); if (f && !f.value) setTimeout(() => f.focus(), 0);
 }
@@ -2360,7 +2427,10 @@ async function startSession(session){
     if (UI.dirty) { const keep = AUTH.email; AUTH.email = prevEmail; backupNow(); AUTH.email = keep; }
     S = freshState(); setEditing(false, true); UI.dirty = false; UI.savedAt = null; UI.loadedAt = null; UI.loadedVer = 0;
     UI.meta = {status:'draft', reviewer:'', createdBy:'', updatedBy:'', approvedBy:''}; UI.prevQ = []; QB.last = null; CHAT.length = 0; QBITEMS = null; QBIDX = null;
-    CU.jobs = null; resetCu(); fillInputs(); renderAll(); setView('build');
+    CU.jobs = null; resetCu(); NEW_ID = 'new-' + uid();
+    FB.open = false; FB.msg = ''; FB.kind = 'problem'; renderFeedback();
+    DQ.q = ''; DQ.f = 'all'; DQ.server = null; { const i = $('#dqInput'); if (i) i.value = ''; }
+    fillInputs(); renderAll(); setView('build');
   }
   DB = null; EDITOR = false; DRAFTS = []; dbReady = false; ME = null; TEAM = []; MAPEDIT = null; mapType = null;
   if (session) {
@@ -2448,6 +2518,8 @@ function renderTeam(){
   if (roleOf() !== 'admin' || !DB) { v.innerHTML = '<div class="panel"><h2>Team</h2><p>Only admins can manage the team.</p></div>'; return; }
   const opts = (cur, list) => list.map(([k, l]) => `<option value="${esc(k)}"${cur === k ? ' selected' : ''}>${esc(l)}</option>`).join('');
   const reviewers = [['', 'No review'], ...TEAM.filter(t => ['admin','manager'].includes(t.role)).map(t => [t.email, t.name || t.email])];
+  /* Someone set to review who can no longer review (demoted or removed) still shows, so it can be fixed */
+  const revOpts = t => { const list = reviewers.filter(r => r[0] !== t.email); if (t.review_by && !list.some(r => r[0] === t.review_by)) list.push([t.review_by, `${nameOf(t.review_by)} (can't review - pick someone else)`]); return list; };
   v.innerHTML = `<div class="panel"><h2>Team</h2>
     <p><b>Admin</b>: everything, plus the logic map and this page. <b>Manager</b>: reviews and approves drafts, can delete drafts. <b>Estimator</b>: creates and edits drafts.</p>
     <p>Everyone on the team can open and edit every saved draft. "Drafts go to" sends that person's new drafts to a reviewer automatically.</p>
@@ -2456,23 +2528,30 @@ function renderTeam(){
     ${TEAM.map(t => `<tr><td>${esc(t.email)}</td>
       <td><input type="text" data-tm="${esc(t.email)}" data-f="name" value="${esc(t.name || '')}" placeholder="Name" aria-label="Name"></td>
       <td><select data-tm="${esc(t.email)}" data-f="role" aria-label="Role"${t.email === AUTH.email ? ' disabled title="You can\'t change your own role"' : ''}>${opts(t.role, ROLES)}</select></td>
-      <td><select data-tm="${esc(t.email)}" data-f="review_by" aria-label="Drafts go to">${opts(t.review_by || '', reviewers.filter(r => r[0] !== t.email))}</select></td>
+      <td><select data-tm="${esc(t.email)}" data-f="review_by" aria-label="Drafts go to">${opts(t.review_by || '', revOpts(t))}</select></td>
       <td>${t.email === AUTH.email ? '<span class="small">You</span>' : `<button class="undo" data-tmdel="${esc(t.email)}">${UI.tmDel === t.email ? 'Confirm remove' : 'Remove'}</button>`}</td></tr>`).join('')}
     <tr><td><input type="email" id="tmNewEmail" placeholder="new.person@dousefire.co" aria-label="New email"></td><td><input type="text" id="tmNewName" placeholder="Name" aria-label="New name"></td>
       <td><select id="tmNewRole" aria-label="New role">${opts('estimator', ROLES)}</select></td><td></td><td><button class="btn primary" id="tmAdd">Add</button></td></tr>
     </tbody></table></div>` + cuMapHTML();
 }
 const rawEmail = email => (TEAM.find(t => t.email === email) || {}).raw || email;
+/* Nobody's drafts should keep going to someone who can't review them */
+async function clearReviewer(email){
+  const who = TEAM.filter(t => t.review_by === email).map(t => t.raw || t.email);
+  for (const e of who) await AUTH.sb.from('team').update({review_by:null}).eq('email', e);
+  if (who.length) { await loadTeam(); renderTeam(); toast(`${who.length} ${who.length === 1 ? 'person was' : 'people were'} sent to ${nameOf(email)} for review. Pick a new reviewer for them in "Drafts go to".`); }
+  return who.length;
+}
 async function teamSave(email, patch){
   const {data, error} = await AUTH.sb.from('team').update(patch).eq('email', rawEmail(email)).select('email');
-  if (error || !data || !data.length) { toast('Could not save. Only admins can change the team.'); await loadTeam(); renderTeam(); return; }
-  await loadTeam(); renderTeam(); renderAuth(); toast('Saved');
+  if (error || !data || !data.length) { toast('Could not save. Only admins can change the team.'); await loadTeam(); renderTeam(); return false; }
+  await loadTeam(); renderTeam(); renderAuth(); toast('Saved'); return true;
 }
 document.addEventListener('change', e => {
   const el = e.target; if (!el.dataset || !el.dataset.tm) return;
   const patch = {[el.dataset.f]: el.value || null};
   if (el.dataset.f === 'role') patch.is_admin = el.value === 'admin';
-  teamSave(el.dataset.tm, patch);
+  teamSave(el.dataset.tm, patch).then(ok => { if (ok && el.dataset.f === 'role' && el.value === 'estimator') clearReviewer(el.dataset.tm); });
 });
 document.addEventListener('click', async e => {
   if (e.target.closest('#tmAdd')) {
@@ -2489,7 +2568,9 @@ document.addEventListener('click', async e => {
     UI.tmDel = null;
     const {data, error} = await AUTH.sb.from('team').delete().eq('email', rawEmail(email)).select('email');
     if (error || !data || !data.length) { toast('Could not remove. Only admins can change the team.'); return; }
-    await loadTeam(); renderTeam(); toast('Removed');
+    const orphaned = await clearReviewer(email);
+    await loadTeam(); renderTeam();
+    toast(orphaned ? `Removed. ${orphaned} ${orphaned === 1 ? 'person was' : 'people were'} sent to them for review: pick a new reviewer in "Drafts go to".` : 'Removed');
   }
 });
 
@@ -2512,6 +2593,9 @@ function renderReview(){
   document.querySelectorAll('.tabs [data-view="drafts"]').forEach(b => b.innerHTML = `Saved drafts${mine ? ` <span class="badge">${mine}</span>` : ''}`);
   if (!S.id || !DB) { el.hidden = true; return; }
   if (UI.noteOpen && $('#changeNote')) return;   /* keep the note box (and the cursor) as it is */
+  const sig = JSON.stringify([m, S.id, roleOf(), AUTH.email, TEAM.map(t => t.email + t.role + t.name), UI.noteOpen]);
+  if (sig === UI.reviewSig && !el.hidden) return; /* nothing changed: leave open menus and focus alone */
+  UI.reviewSig = sig;
   el.hidden = false;
   const who = m.createdBy ? `Created by ${esc(nameOf(m.createdBy))}` : '';
   const rev = m.reviewer ? ` · Reviewer: ${esc(nameOf(m.reviewer))}` : '';
@@ -2520,7 +2604,7 @@ function renderReview(){
   if (canReview() && m.status === 'review') actions += `<button class="btn" id="askChanges">Request changes</button>`;
   if (m.status !== 'review' && m.status !== 'approved') actions += `<select id="sendTo" aria-label="Send for review to"><option value="">Send for review to...</option>${TEAM.filter(t => ['admin','manager'].includes(t.role) && t.email !== AUTH.email).map(t => `<option value="${esc(t.email)}">${esc(t.name || t.email)}</option>`).join('')}</select>`;
   if (m.status === 'approved' && canReview()) actions += `<button class="btn" data-setstatus="draft">Reopen</button>`;
-  const noteHTML = m.note && (m.status === 'changes' || m.status === 'review') ? `<div class="rbNote"><b>${m.status === 'changes' ? 'Changes requested' : 'Last review note'}${m.reviewer ? ' by ' + esc(nameOf(m.reviewer)) : ''}:</b> ${esc(m.note)}</div>` : '';
+  const noteHTML = m.note && (m.status === 'changes' || m.status === 'review') ? `<div class="rbNote"><b>${m.status === 'changes' ? 'Changes requested' : 'Last review note'}${(m.noteBy || m.reviewer) ? ' by ' + esc(nameOf(m.noteBy || m.reviewer)) : ''}:</b> ${esc(m.note)}</div>` : '';
   const form = UI.noteOpen && m.status === 'review' ? `<div class="rbForm"><label class="ql" for="changeNote">What should change?</label><textarea id="changeNote" maxlength="2000" placeholder="e.g. Add the garage dry valve and recheck the head count on the 2nd floor.">${esc(UI.noteDraft || '')}</textarea>
     <div class="row"><button class="btn primary" id="sendChanges">Send back for changes</button><button class="btn" id="cancelChanges">Cancel</button></div></div>` : '';
   el.innerHTML = `<span class="pill s-${esc(isStatus(m.status) ? m.status : 'draft')}">${statusLabel(m.status)}</span><span class="small">${who}${rev}</span><span class="rbAct">${UI.noteOpen ? '' : actions}</span>${noteHTML}${form}`;
@@ -2530,13 +2614,19 @@ async function setStatus(status, reviewer, note){
   if (SAVING) await SAVING;
   const before = {...UI.meta};
   UI.meta.status = status;
-  if (note !== undefined) UI.meta.note = note;
+  if (note !== undefined) { UI.meta.note = note; UI.meta.noteBy = AUTH.email; }
   if (status === 'approved' || status === 'draft') UI.meta.note = '';
   if (reviewer !== undefined) UI.meta.reviewer = reviewer;
   UI.meta.approvedBy = status === 'approved' ? AUTH.email : '';
   if (!(await saveDraft('status'))) { UI.meta = before; renderReview(); return; }
-  if (status === 'approved' && S.job.clickup && DB) { try { await cuAttach(await makePdf(), fileBase() + ' - Approved.pdf'); } catch {} }
-  toast(status === 'approved' ? 'Approved' : status === 'review' ? 'Sent for review' : status === 'changes' ? 'Sent back for changes' : 'Reopened');
+  let extra = '';
+  if (status === 'approved' && S.job.clickup && DB) {
+    PDF_DROPPED = new Set();
+    let ok = false; try { ok = await cuAttach(await makePdf(), fileBase() + ' - Approved.pdf'); } catch { ok = false; CU.lastErr = 'The PDF could not be made.'; }
+    extra = ok ? ' The approved PDF was saved to the ClickUp job.' : ` The approved PDF could NOT be saved to ClickUp (${CU.lastErr}). Download the PDF and attach it to the job by hand.`;
+    extra += droppedMsg();
+  }
+  toast((status === 'approved' ? 'Approved.' : status === 'review' ? 'Sent for review.' : status === 'changes' ? 'Sent back for changes.' : 'Reopened.') + extra);
 }
 document.addEventListener('click', e => {
   const b = e.target.closest('[data-setstatus]'); if (b) { setStatus(b.dataset.setstatus); return; }
@@ -2729,7 +2819,7 @@ function renderCu(){
   const box = $('#cuBox'); if (!box) return;
   const j = S.job.clickup;
   $('#cuSaveWrap').hidden = !j || !DB;
-  if (!DB) { box.innerHTML = '<p class="small">Sign in to link a ClickUp job.</p>'; return; }
+  if (!DB) { box.innerHTML = `<p class="small">${signedInEmail() ? 'Your email is not on the team list yet, so ClickUp is not available.' : 'Sign in to link a ClickUp job.'}</p>`; return; }
   if (j) { box.innerHTML = `<div class="cuLinked"><span>Linked to ClickUp: ${safeUrl(j.url) ? `<a href="${esc(safeUrl(j.url))}" target="_blank" rel="noopener">${esc(j.name)}</a>` : esc(j.name)}</span>
       <button type="button" class="btn sm" id="cuRefresh"${CU.busy ? ' disabled' : ''}>Refresh details</button><button type="button" class="linkbtn" id="cuUnlink">Unlink</button></div>`; return; }
   /* Keep the search box itself (and the cursor in it); only redraw the button and the results */
@@ -2744,12 +2834,12 @@ function cuJobs(force){
   if (!force && CU.jobs && Date.now() - CU.jobsAt < 180000) return Promise.resolve(CU.jobs);
   if (CU.jobsLoading) return CU.jobsLoading;
   CU.jobsLoading = cuCall({action:'list', statuses:CU_STATUSES})
-    .then(r => { CU.truncated = !!r.truncated; CU.jobs = (r.tasks || []).map(t => ({id:String(t.id), name:String(t.name || ''), status:String(t.status || ''), low:String(t.name || '').toLowerCase()})); CU.jobsAt = Date.now(); return CU.jobs; })
+    .then(r => { CU.truncated = !!r.truncated; CU.jobs = (r.tasks || []).map(t => ({id:String(t.id), name:String(t.name || ''), status:String(t.status || ''), low:String(t.name || '').toLowerCase(), cid:String(t.custom_id || '').toLowerCase()})); CU.jobsAt = Date.now(); return CU.jobs; })
     .finally(() => { CU.jobsLoading = null; if (!$('#cuQ') || !CU.results) renderCu(); });
   renderCu();
   return CU.jobsLoading;
 }
-const cuMatch = q => { const words = q.toLowerCase().split(/[\s,]+/).filter(Boolean); return (CU.jobs || []).filter(t => words.every(w => t.low.includes(w) || t.id.toLowerCase() === w)).slice(0, 20); };
+const cuMatch = q => { const words = q.toLowerCase().split(/[\s,]+/).filter(Boolean); return (CU.jobs || []).filter(t => words.every(w => t.low.includes(w) || t.cid === w || t.id.toLowerCase() === w)).slice(0, 20); };
 let cuTypeTimer = null;
 document.addEventListener('input', e => {
   if (e.target.id !== 'cuQ') return;
@@ -2764,6 +2854,8 @@ async function cuFind(){
   try {
     /* A link, or a word with both letters and numbers (86b2x9k), is probably a task ID. If ClickUp can't find it, search by name instead. */
     const w = q.trim(), looksLikeId = /clickup\.com/i.test(w) || (/^#?[a-z0-9]{6,12}$/i.test(w) && /\d/.test(w) && /[a-z]/i.test(w));
+    /* A custom task ID like DF-123: find it in the job list, then open it by its real ID */
+    if (/^[a-z]+-\d+$/i.test(w)) { try { const jobs = await cuJobs(); const hit = jobs.find(t => t.cid === w.toLowerCase()); if (hit) { CU.busy = false; await cuGet(hit.id); return; } } catch {} }
     if (looksLikeId) { try { const t = await cuCall({action:'get', task:q}); CU.busy = false; applyTask(t); return; } catch (e) { if (['missing_setup', 'not_on_team'].includes(e.message)) throw e; if (/clickup\.com/i.test(w)) { CU.results = []; throw e; } } }
     let jobs = null;
     try { jobs = await cuJobs(); }
@@ -2779,10 +2871,11 @@ async function cuGet(id){
   catch (e) { CU.busy = false; renderCu(); toast(cuErr(e)); }
 }
 function blobToBase64(blob){ return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1]); r.onerror = rej; r.readAsDataURL(blob); }); }
+/* Returns true if saved to the ClickUp job, false if it failed (CU.lastErr says why). The caller shows the message. */
 async function cuAttach(blob, filename){
-  if (!S.job.clickup || !DB) return;
-  try { await cuCall({action:'attach', task:S.job.clickup.id, filename, mime:blob.type || 'application/octet-stream', base64:await blobToBase64(blob)}); toast(`Saved to ClickUp: ${S.job.clickup.name}`); }
-  catch (e) { toast('Downloaded, but could not save to ClickUp. ' + cuErr(e)); }
+  if (!S.job.clickup || !DB) return null;
+  try { await cuCall({action:'attach', task:S.job.clickup.id, filename, mime:blob.type || 'application/octet-stream', base64:await blobToBase64(blob)}); return true; }
+  catch (e) { CU.lastErr = cuErr(e); return false; }
 }
 function cuMapHTML(){
   const saved = Object.keys(CU.map || {}).length > 0;
@@ -2808,7 +2901,7 @@ document.addEventListener('click', e => {
 });
 document.addEventListener('keydown', e => { if (e.target.id === 'cuQ' && e.key === 'Enter') { e.preventDefault(); cuFind(); } });
 const _startSession2 = startSession;
-startSession = async sess => { await _startSession2(sess); CU.jobs = null; if (DB) { await loadCuMap(); if (roleOf() === 'admin') renderTeam(); cuJobs().catch(() => {}); } renderCu(); };
+startSession = async sess => { await _startSession2(sess); CU.jobs = null; if (DB) { await loadCuMap(); if (roleOf() === 'admin') renderTeam(); } renderCu(); };
 const _fillInputs = fillInputs;
 fillInputs = () => { _fillInputs(); renderCu(); };
 renderCu();
@@ -2889,7 +2982,7 @@ function renderQbModal(){
   m.hidden = false;
   const {r, payload, done} = QBP, j = S.job, t = totals();
   if (done) {
-    m.innerHTML = `<div class="authCard qbCard"><div class="authTop"><h2>Sent to QuickBooks</h2><button type="button" class="linkbtn" id="qbClose">Close</button></div>
+    m.innerHTML = `<div class="authCard qbCard" role="dialog" aria-modal="true" aria-labelledby="qbTitle"><div class="authTop"><h2 id="qbTitle">Sent to QuickBooks</h2><button type="button" class="linkbtn" id="qbClose">Close</button></div>
       <p><b>Estimate${done.docNumber ? ' #' + esc(done.docNumber) : ''}</b> ${done.updated ? 'updated' : 'created'} for <b>${esc(done.customer)}</b>${done.project ? ` › <b>${esc(done.project)}</b>${done.projectCreated ? ' (new)' : ''}` : ''}.</p>
       <p>Total in QuickBooks: <b>${fmt2(done.total)}</b></p>
       ${done.unmatched && done.unmatched.length ? `<p class="qbWarn">Sent as "${esc(done.fallback)}" because they're not in QuickBooks: ${done.unmatched.map(esc).join(', ')}</p>` : ''}
@@ -2906,7 +2999,7 @@ function renderQbModal(){
   const rows = payload.lines.map((l, i) => { const x = r.lines[i] || {}; return `<tr${x.found ? '' : ' class="miss"'}><td>${esc(x.found ? x.itemName : (l.code || '-'))}${x.found ? '' : `<div class="small">Not in QuickBooks. Sent as "${esc(x.itemName || QB.fallback)}"</div>`}</td><td class="d">${esc(l.description)}</td><td class="r">${l.qty}</td><td class="r">${fmt2(l.rate)}</td><td class="r">${fmt2(l.qty * l.rate)}</td></tr>`; }).join('');
   const adj = payload.adjustment ? `<tr><td></td><td class="d">Price adjustment</td><td class="r">1</td><td class="r">${fmt2(payload.adjustment)}</td><td class="r">${fmt2(payload.adjustment)}</td></tr>` : '';
   const missing = r.lines.filter(x => !x.found).length;
-  m.innerHTML = `<div class="authCard qbCard"><div class="authTop"><h2>Review before sending to QuickBooks</h2><button type="button" class="linkbtn" id="qbClose">Cancel</button></div>
+  m.innerHTML = `<div class="authCard qbCard" role="dialog" aria-modal="true" aria-labelledby="qbTitle"><div class="authTop"><h2 id="qbTitle">Review before sending to QuickBooks</h2><button type="button" class="linkbtn" id="qbClose">Cancel</button></div>
     <p class="small">Company: <b>${esc(r.company || 'QuickBooks')}</b>${r.env === 'sandbox' ? ' (sandbox test company)' : ''}</p>
     <div class="qbGrid">
       <label class="mini">Customer${sel('qbCust', custOpts, QBP.cust)}</label>
