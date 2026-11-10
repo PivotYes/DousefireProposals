@@ -130,6 +130,7 @@ table.qb tfoot td{font-weight:700;border-bottom:0}
 .checks li{background:var(--warn-soft);color:var(--warn);border-radius:8px;padding:6px 10px;font-size:13px;font-weight:500}
 .good{color:var(--ok);font-size:13px;font-weight:600;margin:0}
 .bar{display:flex;gap:8px;flex-wrap:wrap}
+body.waiting .builder,body.waiting #pages{opacity:.5}
 .editNote{display:none;background:var(--warn-soft);color:var(--warn);border-radius:8px;padding:8px 12px;font-size:13px;font-weight:500}
 body.editing .editNote{display:block}
 body.editing .builder{opacity:.45;pointer-events:none}
@@ -1584,6 +1585,7 @@ async function whenSaved(){ if (SAVING) { toast('Finishing the save first...'); 
 async function doSave(mode){
   const statusOnly = mode === 'status';
   if (!mode && S.id && !UI.dirty && DB) { toast('No changes to save.'); return true; }
+  if (!mode && !S.id && !UI.dirty && DB) { toast('Nothing to save yet. Fill in the proposal first.'); return false; }
   const doc = S;                     /* the proposal this save belongs to */
   const still = () => S === doc;     /* still on screen? */
   if (!DB) { toast(AUTH.email ? 'Your email is not on the team list yet. Ask the admin to add you.' : 'Sign in to save drafts.'); return false; }
@@ -1624,7 +1626,7 @@ async function doSave(mode){
     }
     const meta = UI.meta;
     /* Changing an approved proposal takes away the approval */
-    if (S.id && !statusOnly && UI.dirty && meta.status === 'approved') {
+    if (S.id && !statusOnly && UI.dirty && meta.status === 'approved' && !canReview()) {
       if (!confirm('This proposal was approved. Saving your changes removes the approval' + (meta.reviewer ? ` and sends it back to ${nameOf(meta.reviewer)} for review` : '') + '. Continue?')) return false;
       meta.status = meta.reviewer ? 'review' : 'draft'; meta.approvedBy = '';
     }
@@ -2119,7 +2121,7 @@ document.addEventListener('click', e => {
     const id = b.dataset.del;
     if (confirmDel !== id) { confirmDel = id; renderDrafts(); return; }
     confirmDel = null;
-    DB.collection('drafts').doc(id).delete().then(() => { if (S.id === id) { S.id = null; UI.loadedAt = null; UI.loadedVer = 0; UI.meta = {status:'draft', reviewer:'', createdBy:'', updatedBy:'', approvedBy:''}; dirty(); renderReview(); } toast('Draft deleted'); if (DQ.server) { DQ.server = DQ.server.filter(x => x.id !== id); renderDraftList(); } }).catch(err => toast(err && err.code === 'not_deleted' ? 'The draft was not deleted. Only managers and admins can delete drafts.' : err && err.code === 'P0001' ? String(err.message) : 'Could not delete the draft. Check your connection and try again.'));
+    DB.collection('drafts').doc(id).delete().then(() => { if (S.id === id) { S.id = null; UI.loadedAt = null; UI.loadedVer = 0; UI.meta = {status:'draft', reviewer:'', createdBy:'', updatedBy:'', approvedBy:''}; dirty(); renderReview(); } toast('Draft deleted'); if (DQ.server) { DQ.server = DQ.server.filter(x => x.id !== id); renderDraftList(); } }).catch(err => toast(err && err.code === 'not_deleted' ? (canDelete() ? 'The database did not allow the delete. Run the latest security.sql in Supabase, then try again.' : 'The draft was not deleted. Only managers and admins can delete drafts.') : err && err.code === 'P0001' ? String(err.message) : 'Could not delete the draft. Check your connection and try again.'));
     return;
   }
   if (b.id === 'openTheirs') { if (!UI.dirty || confirm('Open their version? Your unsaved changes will be lost.')) openDraft(S.id); return; }
@@ -2193,10 +2195,21 @@ $('#printBtn').addEventListener('click', () => { flushDoc(); try { window.print(
 $('#saveBtn').addEventListener('click', () => saveDraft());
 $('#newBtn').addEventListener('click', async () => {
   const nb = $('#newBtn');
-  if (SAVING) { await whenSaved(); }
+  if (UI.newPending) return;                       /* already waiting: ignore extra clicks */
+  if (SAVING) {
+    /* Lock the proposal while the save finishes, so nothing typed now can end up in it */
+    UI.newPending = true; nb.disabled = true; nb.textContent = 'Saving...';
+    const locked = [$('.builder'), $('#pages'), $('#chatInput')].filter(Boolean);
+    locked.forEach(el => { el.inert = true; }); document.body.classList.add('waiting');
+    let saved = false;
+    try { toast('Finishing the save first...'); saved = await SAVING; } catch { saved = false; }
+    finally { UI.newPending = false; nb.disabled = false; nb.textContent = 'New'; locked.forEach(el => { el.inert = false; }); document.body.classList.remove('waiting'); }
+    /* The save didn't go through: keep the work on screen. Starting over takes a fresh New click and a confirm. */
+    if (UI.dirty) { delete nb.dataset.sure; toast(saved ? 'You made changes while it was saving. Save again to keep them, or click New twice to discard them.' : 'The save did not go through, so your work is still here. Save again, or click New twice to discard it.'); return; }
+  }
   const discardKey = backupKey();
-  if (UI.dirty && !nb.dataset.sure) { nb.dataset.sure = '1'; nb.textContent = 'Discard changes?'; setTimeout(() => { delete nb.dataset.sure; nb.textContent = 'New'; }, 3000); return; }
-  delete nb.dataset.sure; nb.textContent = 'New';
+  if (UI.dirty && !nb.dataset.sure) { nb.dataset.sure = '1'; nb.textContent = 'Discard changes?'; clearTimeout(nb._t); nb._t = setTimeout(() => { delete nb.dataset.sure; nb.textContent = 'New'; }, 3000); return; }
+  clearTimeout(nb._t); delete nb.dataset.sure; nb.textContent = 'New';
   S = freshState(); setEditing(false, true); UI.dirty = false; UI.savedAt = null; UI.loadedAt = null; UI.loadedVer = 0; QB.last = null; CHAT.length = 0; renderChat(); dropBackup(discardKey); clearBackup(); NEW_ID = 'new-' + uid(); resetCu(); UI.noteOpen = false; UI.prevQ = []; UI.numAuto = true; UI.meta = {status:'draft', reviewer:'', createdBy:'', updatedBy:''}; renderReview();
   fillInputs(); renderAll(); autoNum(); renderDrafts(); setView('build');
 });
@@ -2503,7 +2516,7 @@ function renderReview(){
   const who = m.createdBy ? `Created by ${esc(nameOf(m.createdBy))}` : '';
   const rev = m.reviewer ? ` · Reviewer: ${esc(nameOf(m.reviewer))}` : '';
   let actions = '';
-  if (canReview() && (m.status === 'review' || m.status === 'changes')) actions += `<button class="btn primary" data-setstatus="approved">Approve</button>`;
+  if (canReview() && m.status !== 'approved') actions += `<button class="btn primary" data-setstatus="approved">Approve</button>`;
   if (canReview() && m.status === 'review') actions += `<button class="btn" id="askChanges">Request changes</button>`;
   if (m.status !== 'review' && m.status !== 'approved') actions += `<select id="sendTo" aria-label="Send for review to"><option value="">Send for review to...</option>${TEAM.filter(t => ['admin','manager'].includes(t.role) && t.email !== AUTH.email).map(t => `<option value="${esc(t.email)}">${esc(t.name || t.email)}</option>`).join('')}</select>`;
   if (m.status === 'approved' && canReview()) actions += `<button class="btn" data-setstatus="draft">Reopen</button>`;
