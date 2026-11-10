@@ -5,7 +5,8 @@
 --   * Only managers and admins can approve a draft or send it back for changes.
 --   * An approved proposal can only be changed by sending it back for review first (unless you're a manager or admin).
 --   * A draft can't be saved empty or with a made-up review status.
---   * "Created by", "Updated by" and "Approved by" are set by the database from who is signed in, so they can't be faked.
+--   * "Created by", "Updated by", "Approved by" and "Changes requested by" are set by the database from who is signed in, so they can't be faked.
+--   * "Updated" times come from the database clock, not each computer's clock.
 --   * Managers and admins can delete drafts (estimators can't).
 --   * The tables holding the QuickBooks login can only be read by the server functions.
 --   * Only admins can change the team list, the Logic map, and the ClickUp / QuickBooks settings.
@@ -75,7 +76,7 @@ begin
 
   -- An approved proposal stays as approved: estimators send it back for review to change it
   if tg_op = 'UPDATE' and old_status = 'approved' and new_status = 'approved' and r not in ('admin', 'manager')
-     and (new.data - array['updatedAt', 'updatedBy', 'ver', 'createdBy', 'approvedBy']) is distinct from (old.data - array['updatedAt', 'updatedBy', 'ver', 'createdBy', 'approvedBy']) then
+     and (new.data - array['updatedAt', 'updatedBy', 'ver', 'createdBy', 'approvedBy', 'noteBy']) is distinct from (old.data - array['updatedAt', 'updatedBy', 'ver', 'createdBy', 'approvedBy', 'noteBy']) then
     raise exception 'This proposal is approved. To change it, it has to go back for review first.';
   end if;
 
@@ -95,6 +96,19 @@ begin
   else
     new.data := jsonb_set(new.data, '{approvedBy}', to_jsonb(''::text));
   end if;
+
+  -- Who sent it back for changes: set when it is sent back, kept while it goes back for review, cleared after
+  if new_status = 'changes' and old_status <> 'changes' then
+    new.data := jsonb_set(new.data, '{noteBy}', to_jsonb(me));
+  elsif tg_op = 'UPDATE' and new_status in ('changes', 'review') then
+    new.data := jsonb_set(new.data, '{noteBy}', coalesce(old.data -> 'noteBy', to_jsonb(''::text)));
+  else
+    new.data := jsonb_set(new.data, '{noteBy}', to_jsonb(''::text));
+  end if;
+
+  -- Times from the database clock, so a computer with the wrong time can't misorder the drafts list
+  new.updated_at := now();
+  new.data := jsonb_set(new.data, '{updatedAt}', to_jsonb(to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')));
   return new;
 end $$;
 drop trigger if exists drafts_guard on public.drafts;
