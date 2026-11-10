@@ -6,7 +6,8 @@
 --   * An approved proposal can only be changed by sending it back for review first (unless you're a manager or admin).
 --   * A draft can't be saved empty or with a made-up review status.
 --   * "Created by", "Updated by" and "Approved by" are set by the database from who is signed in, so they can't be faked.
---   * Only managers and admins can delete drafts.
+--   * Managers and admins can delete drafts (estimators can't).
+--   * The tables holding the QuickBooks login can only be read by the server functions.
 --   * Only admins can change the team list, the Logic map, and the ClickUp / QuickBooks settings.
 -- If any step shows an error, stop and send the message to Claude.
 
@@ -100,6 +101,10 @@ drop trigger if exists drafts_guard on public.drafts;
 create trigger drafts_guard before insert or update on public.drafts for each row execute function public.drafts_guard();
 
 -- 3) Extra limits on top of the rules you already have (these can only take access away, never add it)
+-- Deleting needs a rule that allows it (the original setup may not have one) plus the limit to managers and admins
+grant delete on public.drafts to authenticated;
+drop policy if exists "team managers can delete drafts" on public.drafts;
+create policy "team managers can delete drafts" on public.drafts for delete to authenticated using (public.team_role() in ('admin', 'manager'));
 drop policy if exists "managers delete drafts" on public.drafts;
 create policy "managers delete drafts" on public.drafts as restrictive for delete to public using (public.team_role() in ('admin', 'manager'));
 
@@ -117,8 +122,19 @@ create policy "admins add team" on public.team as restrictive for insert to publ
 create policy "admins change team" on public.team as restrictive for update to public using (public.team_role() = 'admin') with check (public.team_role() = 'admin');
 create policy "admins delete team" on public.team as restrictive for delete to public using (public.team_role() = 'admin');
 
--- 4) Check: every table should show rls_on = true. If any says false, tell Claude before going further.
+-- 4) QuickBooks login tables: only the server functions (service role) may read or change them.
+--    Turning on row security with no rules blocks everyone else. The app itself never reads these tables.
+do $$
+begin
+  if to_regclass('public.qbo_connection') is not null then execute 'alter table public.qbo_connection enable row level security'; end if;
+  if to_regclass('public.qbo_oauth_state') is not null then execute 'alter table public.qbo_oauth_state enable row level security'; end if;
+end $$;
+
+-- 5) Check: every table should show rls_on = true. If any says false, tell Claude before going further.
 select c.relname as table_name, c.relrowsecurity as rls_on
 from pg_class c join pg_namespace n on n.oid = c.relnamespace
-where n.nspname = 'public' and c.relname in ('drafts', 'settings', 'team', 'feedback')
+where n.nspname = 'public' and c.relname in ('drafts', 'settings', 'team', 'feedback', 'qbo_connection', 'qbo_oauth_state')
 order by 1;
+
+-- 6) For reference: the delete rules on drafts (there should be one "permissive" and one "restrictive")
+select policyname, permissive, cmd from pg_policies where schemaname = 'public' and tablename = 'drafts' and cmd in ('DELETE', 'ALL') order by 1;
