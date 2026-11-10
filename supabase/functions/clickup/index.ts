@@ -55,11 +55,11 @@ function parseTaskId(input: string): string {
 }
 
 // Reads the Proposals list from ClickUp, 5 pages (500 tasks) at a time instead of one page after another,
-// and keeps the result for a minute so repeat searches don't go back to ClickUp.
+// and keeps the result for 3 minutes so repeat searches and sign-ins do not go back to ClickUp.
 let CACHE: { at: number; key: string; jobs: any[]; truncated?: boolean } = { at: 0, key: "", jobs: [] };
 async function loadJobs(listId: string, H: Record<string, string>, wanted: string[]) {
   const key = listId + "|" + wanted.join("|");
-  if (CACHE.key === key && Date.now() - CACHE.at < 60000) return CACHE.jobs;
+  if (CACHE.key === key && Date.now() - CACHE.at < 180000) return CACHE.jobs; // reuse for 3 minutes
   const page = async (n: number, sq: string) => {
     const r = await fetch(`${API}/list/${listId}/task?page=${n}&subtasks=true${sq}`, { headers: H });
     const d = await r.json();
