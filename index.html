@@ -1031,7 +1031,7 @@ function row(it){
   if (on) {
     const rateIn = `<label>$<input type="number" class="rate${(it.id in S.rate)?' edited':''}" min="0" step="any" aria-label="Price" data-rate="${it.id}" value="${rate(it)}"></label>`;
     if (s === 'in') calc = it.unit
-      ? `<input type="number" min="0" class="${(it.id in S.qty)?'edited':''}" aria-label="Quantity" data-qty="${it.id}" value="${qty(it)}"> ${it.unit}s × ${rateIn}<span class="amt">${fmt(amt(it))}</span>`
+      ? `<input type="number" min="0" class="${(it.id in S.qty)?'edited':''}" aria-label="Quantity" data-qty="${it.id}" value="${qty(it)}"> ${esc(it.unit)}s × ${rateIn}<span class="amt">${fmt(amt(it))}</span>`
       : `${rateIn}<span class="amt">${fmt(amt(it))}</span>`;
     else calc = `${rateIn}${it.unit ? ' each' : ''}<span class="amt muted">Not in price</span>`;
     calc += `<button type="button" class="tag" data-addc="${it.id}" aria-pressed="${s==='add'}">Additional cost</button>`;
@@ -1635,6 +1635,7 @@ async function doSave(mode){
     }
     const m = UI.meta;
     let force = false, adoptedChanges = null;
+    const wasNew = !S.id;
     /* A new draft whose first save may already have reached the database (lost reply, or restored after a crash):
        if it's there, carry on as an existing draft, so anything others did to it since is checked, never overwritten */
     if (!S.id && S.newId && DB.getMeta) {
@@ -1657,6 +1658,7 @@ async function doSave(mode){
         if (UI.pendingVer && n0(cur.ver) === UI.pendingVer && cur.updatedBy === AUTH.email && (cur.cver == null || UI.pendingCver == null || n0(cur.cver) === UI.pendingCver)) {
           /* Our own earlier save that "took too long" did land: carry on from it */
           takeTheirs(); UI.loadedCver = cur.cver != null ? n0(cur.cver) : UI.loadedCver; UI.pendingVer = 0;
+          const cm = cleanMeta(cur); UI.meta = {...UI.meta, status:cm.status, reviewer:cm.reviewer, approvedBy:cm.approvedBy, note:cm.note, noteBy:cm.noteBy};
         } else if (!statusOnly && cur.cver != null && UI.loadedCver != null && n0(cur.cver) === n0(UI.loadedCver)) {
           /* They only changed the review status (approve, request changes...): take their status, no prompt */
           takeTheirs();
@@ -1703,7 +1705,7 @@ async function doSave(mode){
     const cver = contentSave ? Math.max(n0(UI.loadedCver), n0(UI.curCver)) + 1 : n0(UI.loadedCver);
     const data = {name:draftName(), num:S.job.num, customer:S.job.customer || '', addr:[S.job.addr1, S.job.addr2].filter(Boolean).join(', '), type:S.type, total:totals().total, updatedAt:new Date().toISOString(), ver, cver, state:JSON.stringify(serial()),
       status:meta.status, reviewer:meta.reviewer || '', createdBy:meta.createdBy || AUTH.email, updatedBy:AUTH.email, approvedBy:meta.approvedBy || '', note:meta.status === 'changes' || meta.status === 'review' ? (meta.note || '') : '', noteBy:meta.status === 'changes' || meta.status === 'review' ? (meta.noteBy || '') : ''};
-    const revAtSave = UI.rev || 0, wasNew = !S.id;
+    const revAtSave = UI.rev || 0;
     UI.pendingVer = ver; UI.pendingCver = cver;   /* if the reply is lost, the next save recognises this as our own */
     if (S.id) await timed(DB.collection('drafts').doc(S.id).set(data, force ? null : n0(UI.loadedVer)));
     else { const ref = await timed(DB.collection('drafts').add(data, S.newId)); doc.id = ref.id; doc.newId = null; }
@@ -1718,7 +1720,7 @@ async function doSave(mode){
   } catch (e) {
     /* Messages from the database rules (security.sql) are shown as they are */
     if (e && e.code === 'P0001') toast(e.message === 'not_on_team' ? 'Your email is not on the team list, so this could not be saved.' : String(e.message || 'The database refused this change.'));
-    else if (e && e.code === 'timeout') toast('Saving is taking too long. Check your connection. Your work is still here, so try Save again.');
+    else if (e && e.code === 'timeout') toast(mode === 'status' ? 'This is taking too long. Check your connection, then try again. If it went through, the draft will show it in a moment.' : 'Saving is taking too long. Check your connection. Your work is still here, so try Save again.');
     else toast(e && e.code === 'conflict' ? 'Someone saved this draft at the same moment. Click Save again to see their changes first.'
       : e && e.code === '23505' ? `Proposal #${S.job.num} is already used by another draft. Clear the number to get a new one.`
       : e && e.code === 'not_granted' ? 'You do not have permission to save drafts here.' : 'Could not save the draft. Check your connection and try again.');
@@ -2162,6 +2164,8 @@ function setEditing(on, silent){
 }
 
 /* ---------- Wiring ---------- */
+/* After a redraw, put keyboard focus back on the same button (now saying "Confirm ...") */
+function refocus(sel){ const b = document.querySelector(sel); if (b) b.focus(); }
 function toast(msg){ const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('show'), Math.min(10000, 2400 + String(msg).length * 55)); }
 document.addEventListener('click', e => { if (e.target.id === 'toast') { clearTimeout(toast._t); e.target.classList.remove('show'); } });
 function setView(v){ document.body.dataset.view = v; window.scrollTo(0, 0); document.querySelectorAll('.tabs [data-view]').forEach(b => b.setAttribute('aria-selected', b.dataset.view === v)); if (v === 'build') fitScale(); }
@@ -2224,7 +2228,7 @@ document.addEventListener('click', e => {
   if (b.dataset.open) { const d = {id:b.dataset.open}; if (d && (!UI.dirty || confirm('You have unsaved changes on the proposal you are working on. Open this draft and lose those changes?'))) openDraft(d.id, UI.dirty ? backupKey() : null); return; }
   if (b.dataset.del) {
     const id = b.dataset.del;
-    if (confirmDel !== id) { confirmDel = id; renderDrafts(); clearTimeout(UI.delT); UI.delT = setTimeout(() => { if (confirmDel === id) { confirmDel = null; renderDrafts(); } }, 4000); return; }
+    if (confirmDel !== id) { confirmDel = id; renderDrafts(); refocus(`[data-del="${CSS.escape(id)}"]`); clearTimeout(UI.delT); UI.delT = setTimeout(() => { if (confirmDel === id) { confirmDel = null; renderDrafts(); } }, 4000); return; }
     confirmDel = null;
     DB.collection('drafts').doc(id).delete().then(() => { if (S.id === id) { S.id = null; UI.loadedAt = null; UI.loadedVer = 0; UI.meta = {status:'draft', reviewer:'', createdBy:'', updatedBy:'', approvedBy:''}; dirty(); renderReview(); } toast('Draft deleted'); if (DQ.server) { DQ.server = DQ.server.filter(x => x.id !== id); renderDraftList(); } }).catch(err => toast(err && err.code === 'not_deleted' ? (canDelete() ? 'The database did not allow the delete. Run the latest security.sql in Supabase, then try again.' : 'The draft was not deleted. Only managers and admins can delete drafts.') : err && err.code === 'P0001' ? String(err.message) : 'Could not delete the draft. Check your connection and try again.'));
     return;
@@ -2500,6 +2504,10 @@ async function startSession(session){
 }
 async function initBackend(){
   if (!window.supabase || !SUPABASE_URL.startsWith('https://') || SUPABASE_ANON_KEY.includes('PASTE')) { renderAuth(); renderDrafts(); return; }
+  /* An email link that expired or was already used comes back with an error in the address: read it before Supabase does */
+  const lp = new URLSearchParams(location.hash.slice(1)), lq = new URLSearchParams(location.search);
+  const linkErr = lp.get('error_code') || lp.get('error') || lq.get('error_code') || lq.get('error');
+  if (linkErr) { try { history.replaceState(null, '', location.pathname); } catch {} }
   AUTH.sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
   /* Supabase reports the same sign-in more than once (on load, and when the tab comes back into view).
      Start a session once per person; later reports for the same person reuse it. */
@@ -2516,6 +2524,11 @@ async function initBackend(){
   });
   const {data:{session}} = await AUTH.sb.auth.getSession();
   await begin(session);
+  if (linkErr && !AUTH.email) {
+    UI.authOpen = true; AUTHMODE = 'forgot';
+    AUTHMSG = 'That email link has expired or was already used. Links work once and expire after a while. Enter your email to get a new one.';
+    renderAuthModal();
+  }
 }
 document.addEventListener('submit', async e => {
   if (e.target.id !== 'authForm') return;
@@ -2613,7 +2626,7 @@ document.addEventListener('click', async e => {
   const d = e.target.closest('[data-tmdel]');
   if (d) {
     const email = d.dataset.tmdel;
-    if (UI.tmDel !== email) { UI.tmDel = email; renderTeam(); return; }
+    if (UI.tmDel !== email) { UI.tmDel = email; renderTeam(); refocus(`[data-tmdel="${CSS.escape(email)}"]`); return; }
     UI.tmDel = null;
     const {data, error} = await AUTH.sb.from('team').delete().eq('email', rawEmail(email)).select('email');
     if (error || !data || !data.length) { toast('Could not remove. Only admins can change the team.'); return; }
@@ -2632,6 +2645,8 @@ function renderConflict(){
   /* Our own save that "took too long" has now landed: it's ours, nothing to warn about */
   if (cur && !SAVING && UI.pendingVer && n0(cur.ver) === UI.pendingVer && cur.updatedBy === AUTH.email && (cur.cver == null || UI.pendingCver == null || n0(cur.cver) === UI.pendingCver)) {
     UI.loadedVer = n0(cur.ver); if (cur.cver != null) UI.loadedCver = n0(cur.cver); UI.pendingVer = 0; UI.pendingCver = null;
+    const cm = cleanMeta(cur);
+    if (cm.status !== UI.meta.status) { UI.meta = {...UI.meta, status:cm.status, reviewer:cm.reviewer, approvedBy:cm.approvedBy, note:cm.note, noteBy:cm.noteBy}; renderReview(); toast(`Your change went through after all: this draft is now "${statusLabel(cm.status)}".`); }
   }
   /* Someone only changed the review status (approved, sent back...): take it and say so, nothing to merge */
   if (cur && !SAVING && n0(cur.ver) > n0(UI.loadedVer) && cur.cver != null && UI.loadedCver != null && n0(cur.cver) === n0(UI.loadedCver)) {
@@ -2921,24 +2936,27 @@ document.addEventListener('input', e => {
 document.addEventListener('focusin', e => { if (e.target.id === 'cuQ' && DB) cuJobs().catch(() => {}); });
 async function cuFind(){
   const q = ($('#cuQ') || {}).value || ''; if (!q.trim()) return;
+  const doc = S, gone = () => { if (S === doc) return false; CU.busy = false; renderCu(); return true; };
   CU.busy = true; renderCu();
   try {
     /* A link, or a word with both letters and numbers (86b2x9k), is probably a task ID. If ClickUp can't find it, search by name instead. */
     const w = q.trim(), looksLikeId = /clickup\.com/i.test(w) || (/^#?[a-z0-9]{6,12}$/i.test(w) && /\d/.test(w) && /[a-z]/i.test(w));
     /* A custom task ID like DF-123: find it in the job list, then open it by its real ID */
-    if (/^[a-z]+-\d+$/i.test(w)) { try { const jobs = await cuJobs(); const hit = jobs.find(t => t.cid === w.toLowerCase()); if (hit) { CU.busy = false; await cuGet(hit.id); return; } } catch {} }
-    if (looksLikeId) { try { const t = await cuCall({action:'get', task:q}); CU.busy = false; applyTask(t); return; } catch (e) { if (['missing_setup', 'not_on_team'].includes(e.message)) throw e; if (/clickup\.com/i.test(w)) { CU.results = []; throw e; } } }
+    if (/^[a-z]+-\d+$/i.test(w)) { try { const jobs = await cuJobs(); if (gone()) return; const hit = jobs.find(t => t.cid === w.toLowerCase()); if (hit) { CU.busy = false; await cuGet(hit.id); return; } } catch {} }
+    if (looksLikeId) { try { const t = await cuCall({action:'get', task:q}); if (gone()) return; CU.busy = false; applyTask(t); return; } catch (e) { if (['missing_setup', 'not_on_team'].includes(e.message)) throw e; if (/clickup\.com/i.test(w)) { CU.results = []; throw e; } } }
     let jobs = null;
     try { jobs = await cuJobs(); }
     catch (e) { if (['missing_setup', 'not_on_team'].includes(e.message)) throw e; } /* list not available: use the slower name search */
+    if (gone()) return;
     if (jobs) CU.results = cuMatch(q);
-    else { const r = await cuCall({action:'search', q, statuses:CU_STATUSES}); CU.results = r.tasks || []; } /* older ClickUp function without 'list' */
-  } catch (e) { toast(cuErr(e)); }
+    else { const r = await cuCall({action:'search', q, statuses:CU_STATUSES}); if (gone()) return; CU.results = r.tasks || []; } /* older ClickUp function without 'list' */
+  } catch (e) { if (gone()) return; toast(cuErr(e)); }
   CU.busy = false; renderCu();
 }
 async function cuGet(id){
+  const doc = S;
   CU.busy = true; renderCu();
-  try { const t = await cuCall({action:'get', task:id}); CU.busy = false; applyTask(t); }
+  try { const t = await cuCall({action:'get', task:id}); CU.busy = false; if (S !== doc) { renderCu(); return; } applyTask(t); }
   catch (e) { CU.busy = false; renderCu(); toast(cuErr(e)); }
 }
 function blobToBase64(blob){ return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1]); r.onerror = rej; r.readAsDataURL(blob); }); }
@@ -3120,7 +3138,7 @@ async function qbConfirm(){
   renderQbModal(); renderQB();
 }
 document.addEventListener('click', e => {
-  if (e.target.closest('#qbClose') || e.target.closest('#qbClose2')) { QBP = null; renderQbModal(); return; }
+  if (e.target.closest('#qbClose') || e.target.closest('#qbClose2')) { if (QBP && QBP.sending) { toast('Sending to QuickBooks. This closes when it finishes.'); return; } QBP = null; renderQbModal(); return; }
   if (e.target.closest('#qbConfirm')) qbConfirm();
 });
 document.addEventListener('change', async e => {
@@ -3162,7 +3180,7 @@ document.addEventListener('click', async e => {
     return;
   }
   if (e.target.closest('#qbDisconnect')) {
-    if (!UI.qbDisc) { UI.qbDisc = true; renderTeam(); return; }
+    if (!UI.qbDisc) { UI.qbDisc = true; renderTeam(); refocus('#qbDisconnect'); return; }
     UI.qbDisc = false;
     try { await fnCall('qbo', {action:'disconnect'}); QB.connected = false; toast('QuickBooks disconnected'); } catch (err) { toast(qbErr(err)); }
     renderTeam(); renderQB();
