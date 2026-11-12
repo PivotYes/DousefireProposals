@@ -1452,7 +1452,7 @@ const BACKUP_NEW = () => BACKUP_PREFIX + ':' + NEW_ID;
 const backupKey = () => BACKUP_PREFIX + ':' + (S.id || NEW_ID);
 function backupNow(){
   if (!UI.dirty || UI.restoring) return;
-  try { localStorage.setItem(backupKey(), JSON.stringify({at:Date.now(), id:S.id, user:AUTH.email || '', meta:UI.meta, loadedAt:UI.loadedAt, loadedVer:UI.loadedVer, num:S.job.num, customer:S.job.customer, addr:S.job.addr1, state:serial()})); } catch { if (!UI.backupWarned) { UI.backupWarned = true; toast('This browser can\'t keep a crash backup right now (its storage is full). Save often.'); } }
+  try { localStorage.setItem(backupKey(), JSON.stringify({at:Date.now(), id:S.id, user:AUTH.email || '', meta:UI.meta, loadedAt:UI.loadedAt, loadedVer:UI.loadedVer, loadedCver:UI.loadedCver, num:S.job.num, customer:S.job.customer, addr:S.job.addr1, state:serial()})); } catch { if (!UI.backupWarned) { UI.backupWarned = true; toast('This browser can\'t keep a crash backup right now (its storage is full). Save often.'); } }
 }
 /* Backups set aside when this draft was opened are older than what was just saved */
 function dropKeptBackups(id){ try { Object.keys(localStorage).filter(k => k.startsWith(BACKUP_PREFIX + ':kept-' + id + '-')).forEach(dropBackup); } catch {} }
@@ -1485,7 +1485,7 @@ function restoreBackup(){
   const b = readBackup(); if (!b) return;
   let o; try { o = cleanState(JSON.parse(JSON.stringify(b.state))); } catch { dropBackup(b.key); renderRestore(readBackup()); return; }
   UI.restoring = true;
-  applyDraft(o, {id:b.id, updatedAt:b.loadedAt, ver:b.loadedVer}, cleanMeta(b.meta || {}));
+  applyDraft(o, {id:b.id, updatedAt:b.loadedAt, ver:b.loadedVer, cver:b.loadedCver}, cleanMeta(b.meta || {}));
   UI.restoring = false;
   if (!b.id) NEW_ID = 'new-' + uid();
   dropBackup(b.key); dirty(); backupNow(); renderRestore(readBackup());
@@ -1634,7 +1634,15 @@ async function doSave(mode){
       }
     }
     const m = UI.meta;
-    let force = false;
+    let force = false, adoptedChanges = null;
+    /* A new draft whose first save may already have reached the database (lost reply, or restored after a crash):
+       if it's there, carry on as an existing draft, so anything others did to it since is checked, never overwritten */
+    if (!S.id && S.newId && DB.getMeta) {
+      let ex; try { ex = await timed(DB.getMeta(S.newId), 15000); } catch (e) { ex = e && ['22P02', '42804'].includes(e.code) ? null : undefined; }  /* id column that isn't a uuid: it can't be there */
+      if (!still()) return false;
+      if (ex === undefined) { toast('Could not reach the database to check this draft. Your work is still here, so try Save again.'); return false; }
+      if (ex) { S.id = S.newId; S.newId = null; UI.loadedVer = 1; UI.loadedCver = 1; UI.pendingVer = 1; UI.pendingCver = 1; }
+    }
     if (S.id && DB.getDraft) {
       let cur; UI.curVer = 0; UI.curCver = 0; try { cur = await timed((DB.getMeta || DB.getDraft).call(DB, S.id), 15000); } catch { cur = undefined; }
       if (cur) UI.curVer = n0(cur.ver);
@@ -1646,13 +1654,14 @@ async function doSave(mode){
       } else if (cur && isNewer(cur)) {
         DRAFTS = DRAFTS.some(d => d.id === cur.id) ? DRAFTS.map(d => d.id === cur.id ? {...d, ...cur} : d) : [cur, ...DRAFTS];
         const takeTheirs = () => { UI.loadedVer = n0(cur.ver); UI.curVer = n0(cur.ver); UI.curCver = n0(cur.cver); };
-        if (UI.pendingVer && n0(cur.ver) === UI.pendingVer && cur.updatedBy === AUTH.email) {
+        if (UI.pendingVer && n0(cur.ver) === UI.pendingVer && cur.updatedBy === AUTH.email && (cur.cver == null || UI.pendingCver == null || n0(cur.cver) === UI.pendingCver)) {
           /* Our own earlier save that "took too long" did land: carry on from it */
           takeTheirs(); UI.loadedCver = cur.cver != null ? n0(cur.cver) : UI.loadedCver; UI.pendingVer = 0;
         } else if (!statusOnly && cur.cver != null && UI.loadedCver != null && n0(cur.cver) === n0(UI.loadedCver)) {
           /* They only changed the review status (approve, request changes...): take their status, no prompt */
           takeTheirs();
           const cm = cleanMeta(cur); UI.meta = {...UI.meta, status:cm.status, reviewer:cm.reviewer, approvedBy:cm.approvedBy, note:cm.note, noteBy:cm.noteBy};
+          if (cm.status === 'changes') adoptedChanges = cm;
         } else if (statusOnly && !UI.dirty) {
           /* Approving or sending back an out-of-date copy: load the newer version so they see what they approve */
           UI.staleReload = cur.updatedBy === AUTH.email ? 'You' : (nameOf(cur.updatedBy) || 'Someone else');
@@ -1686,7 +1695,7 @@ async function doSave(mode){
     const canRev = e => TEAM.some(t => t.email === e && ['admin', 'manager'].includes(t.role));
     let noReviewer = false;
     if (!S.id) { meta.createdBy = AUTH.email; if (ME && ME.review_by && meta.status === 'draft') { if (canRev(ME.review_by)) { meta.status = 'review'; meta.reviewer = ME.review_by; } else noReviewer = true; } }
-    else if (meta.status === 'changes' && meta.createdBy === AUTH.email && meta.reviewer && !statusOnly) meta.status = 'review';
+    else if (meta.status === 'changes' && meta.createdBy === AUTH.email && meta.reviewer && !statusOnly && !adoptedChanges) meta.status = 'review';
     meta.updatedBy = AUTH.email;
     const ver = Math.max(n0(UI.loadedVer), n0(UI.curVer)) + 1;  /* after "save anyway", go past their version too */
     /* cver counts content changes only, so a review-status change by someone else is never mistaken for an edit */
@@ -1695,16 +1704,17 @@ async function doSave(mode){
     const data = {name:draftName(), num:S.job.num, customer:S.job.customer || '', addr:[S.job.addr1, S.job.addr2].filter(Boolean).join(', '), type:S.type, total:totals().total, updatedAt:new Date().toISOString(), ver, cver, state:JSON.stringify(serial()),
       status:meta.status, reviewer:meta.reviewer || '', createdBy:meta.createdBy || AUTH.email, updatedBy:AUTH.email, approvedBy:meta.approvedBy || '', note:meta.status === 'changes' || meta.status === 'review' ? (meta.note || '') : '', noteBy:meta.status === 'changes' || meta.status === 'review' ? (meta.noteBy || '') : ''};
     const revAtSave = UI.rev || 0, wasNew = !S.id;
-    UI.pendingVer = S.id ? ver : 0;
+    UI.pendingVer = ver; UI.pendingCver = cver;   /* if the reply is lost, the next save recognises this as our own */
     if (S.id) await timed(DB.collection('drafts').doc(S.id).set(data, force ? null : n0(UI.loadedVer)));
     else { const ref = await timed(DB.collection('drafts').add(data, S.newId)); doc.id = ref.id; doc.newId = null; }
     ok = true;
     if (still()) {
-      UI.savedAt = new Date(); UI.loadedAt = data.updatedAt; UI.loadedVer = ver; UI.loadedCver = cver; UI.pendingVer = 0;
-      if ((UI.rev || 0) === revAtSave) { UI.dirty = false; dropKeptBackups(doc.id); clearBackup(wasNew ? BACKUP_NEW() : null); }  /* edits typed during the save stay "unsaved" */
+      UI.savedAt = new Date(); UI.loadedAt = data.updatedAt; UI.loadedVer = ver; UI.loadedCver = cver; UI.pendingVer = 0; UI.pendingCver = null;
+      if ((UI.rev || 0) === revAtSave) { UI.dirty = false; clearBackup(wasNew ? BACKUP_NEW() : null); }  /* edits typed during the save stay "unsaved" */
       else { UI.dirty = true; if (wasNew) dropBackup(BACKUP_NEW()); }
     }
-    if (!mode) toast(noReviewer ? 'Draft saved. Your usual reviewer can no longer review, so pick one from "Send for review to..."' : meta.status === 'review' && meta.reviewer ? `Draft saved and sent to ${nameOf(meta.reviewer)} for review` : 'Draft saved');
+    if (!mode && adoptedChanges) toast(`Saved. While you were editing, ${nameOf(adoptedChanges.noteBy || adoptedChanges.reviewer) || 'your reviewer'} sent this back for changes: "${adoptedChanges.note}". Make the changes, then save again to send it back.`);
+    else if (!mode) toast(noReviewer ? 'Draft saved. Your usual reviewer can no longer review, so pick one from "Send for review to..."' : meta.status === 'review' && meta.reviewer ? `Draft saved and sent to ${nameOf(meta.reviewer)} for review` : 'Draft saved');
   } catch (e) {
     /* Messages from the database rules (security.sql) are shown as they are */
     if (e && e.code === 'P0001') toast(e.message === 'not_on_team' ? 'Your email is not on the team list, so this could not be saved.' : String(e.message || 'The database refused this change.'));
@@ -1816,7 +1826,7 @@ function applyDraft(o, d, meta){
   UI.meta = meta;
   setEditing(false, true);
   UI.dirty = false; UI.savedAt = d.updatedAt ? new Date(d.updatedAt) : null; UI.prevQ = []; UI.numAuto = false;
-  QB.last = null; CHAT.length = 0; renderChat(); resetCu(); UI.noteOpen = false;
+  QB.last = null; CHAT.length = 0; renderChat(); resetCu(); UI.noteOpen = false; UI.noteDraft = ''; UI.pendingCver = null;
   /* Drafts saved before quantities had a base: remember the answer they were typed against */
   S.qtyBase = S.qtyBase || {}; expand(T().I).forEach(i => { if (i.qty && i.id in S.qty && !(i.id in S.qtyBase)) S.qtyBase[i.id] = answerQty(i); });
   fillInputs(); renderAll();
@@ -2006,7 +2016,7 @@ const topBar = $('.top');
 const topH = () => topBar.offsetHeight;
 new ResizeObserver(() => document.documentElement.style.setProperty('--topH', topH() + 'px')).observe(topBar);
 document.documentElement.style.setProperty('--topH', topH() + 'px');
-window.addEventListener('scroll', () => { const y = window.scrollY, on = document.body.classList.contains('scrolled'); if (!on && y > 160) document.body.classList.add('scrolled'); else if (on && y < 40) document.body.classList.remove('scrolled'); }, {passive:true});
+window.addEventListener('scroll', () => { const y = window.scrollY, on = document.body.classList.contains('scrolled'); if (!on && y > 160) document.body.classList.add('scrolled'); else if (on && y < 8) document.body.classList.remove('scrolled'); }, {passive:true});
 
 /* ---------- Builder steps: small step menu and collapsible steps ---------- */
 (function stepMenu(){
@@ -2619,12 +2629,16 @@ UI.meta = {status:'draft', reviewer:'', createdBy:'', updatedBy:''};
 function renderConflict(){
   const el = $('#conflictBar'); if (!el) return;
   const cur = S.id && DRAFTS.find(d => d.id === S.id);
+  /* Our own save that "took too long" has now landed: it's ours, nothing to warn about */
+  if (cur && !SAVING && UI.pendingVer && n0(cur.ver) === UI.pendingVer && cur.updatedBy === AUTH.email && (cur.cver == null || UI.pendingCver == null || n0(cur.cver) === UI.pendingCver)) {
+    UI.loadedVer = n0(cur.ver); if (cur.cver != null) UI.loadedCver = n0(cur.cver); UI.pendingVer = 0; UI.pendingCver = null;
+  }
   /* Someone only changed the review status (approved, sent back...): take it and say so, nothing to merge */
   if (cur && !SAVING && n0(cur.ver) > n0(UI.loadedVer) && cur.cver != null && UI.loadedCver != null && n0(cur.cver) === n0(UI.loadedCver)) {
     const cm = cleanMeta(cur);
     UI.meta = {...UI.meta, status:cm.status, reviewer:cm.reviewer, approvedBy:cm.approvedBy, note:cm.note, noteBy:cm.noteBy};
     UI.loadedVer = n0(cur.ver);
-    setTimeout(() => toast(`${cur.updatedBy === AUTH.email ? 'You' : nameOf(cur.updatedBy) || 'Someone'} changed this draft's review status to "${statusLabel(cm.status)}".`), 0);
+    setTimeout(() => toast(`${cur.updatedBy === AUTH.email ? 'You' : nameOf(cur.updatedBy) || 'Someone'} changed this draft's review status to "${statusLabel(cm.status)}".${cm.status === 'changes' && cm.note ? ` What to change: "${cm.note}"` : ''}`), 0);
   }
   const newer = cur && (n0(cur.ver) > n0(UI.loadedVer) || (!n0(cur.ver) && !n0(UI.loadedVer) && UI.loadedAt && cur.updatedAt && cur.updatedAt > UI.loadedAt));
   el.hidden = !newer;
@@ -2649,7 +2663,8 @@ function renderReview(){
   let actions = '';
   if (canReview() && m.status !== 'approved') actions += `<button class="btn primary" data-setstatus="approved">Approve</button>`;
   if (canReview() && m.status === 'review') actions += `<button class="btn" id="askChanges">Request changes</button>`;
-  if (m.status !== 'review' && m.status !== 'approved') actions += `<select id="sendTo" aria-label="Send for review to"><option value="">Send for review to...</option>${TEAM.filter(t => ['admin','manager'].includes(t.role) && t.email !== AUTH.email).map(t => `<option value="${esc(t.email)}">${esc(t.name || t.email)}</option>`).join('')}</select>`;
+  const reviewerGone = m.status === 'review' && !TEAM.some(t => t.email === m.reviewer && ['admin', 'manager'].includes(t.role));
+  if ((m.status !== 'review' && m.status !== 'approved') || reviewerGone) actions += `<select id="sendTo" aria-label="Send for review to"><option value="">Send for review to...</option>${TEAM.filter(t => ['admin','manager'].includes(t.role) && t.email !== AUTH.email).map(t => `<option value="${esc(t.email)}">${esc(t.name || t.email)}</option>`).join('')}</select>`;
   if (m.status === 'approved' && canReview()) actions += `<button class="btn" data-setstatus="draft">Reopen</button>`;
   const noteHTML = m.note && (m.status === 'changes' || m.status === 'review') ? `<div class="rbNote"><b>${m.status === 'changes' ? 'Changes requested' : 'Last review note'}${(m.noteBy || m.reviewer) ? ' by ' + esc(nameOf(m.noteBy || m.reviewer)) : ''}:</b> ${esc(m.note)}</div>` : '';
   const form = UI.noteOpen && m.status === 'review' ? `<div class="rbForm"><label class="ql" for="changeNote">What should change?</label><textarea id="changeNote" maxlength="2000" placeholder="e.g. Add the garage dry valve and recheck the head count on the 2nd floor.">${esc(UI.noteDraft || '')}</textarea>
@@ -2670,6 +2685,7 @@ async function setStatus(status, reviewer, note){
     if (UI.staleReload) {
       const who = UI.staleReload; UI.staleReload = null;
       await openDraft(S.id);
+      if (status === 'changes' && note) UI.noteDraft = note;   /* keep what they typed for when they send it back */
       toast(`${who} saved a newer version after you opened this. It's loaded now: look it over, then ${status === 'approved' ? 'approve' : status === 'changes' ? 'send it back' : 'try'} again.`);
     }
     return;
@@ -2685,7 +2701,7 @@ async function setStatus(status, reviewer, note){
 }
 document.addEventListener('click', e => {
   const b = e.target.closest('[data-setstatus]'); if (b) { setStatus(b.dataset.setstatus); return; }
-  if (e.target.closest('#askChanges')) { UI.noteOpen = true; UI.noteDraft = ''; renderReview(); return; }
+  if (e.target.closest('#askChanges')) { UI.noteOpen = true; UI.noteDraft = UI.noteDraft || ''; renderReview(); return; }
   if (e.target.closest('#cancelChanges')) { UI.noteOpen = false; renderReview(); return; }
   if (e.target.closest('#sendChanges')) {
     const note = (($('#changeNote') || {}).value || '').trim();
@@ -3010,6 +3026,8 @@ async function qbSend(){
   if (!totals().incl.length) { toast('There are no included items to send.'); return; }
   const mm = editPriceMismatch();
   if (mm && !confirm(`The price typed on the proposal is ${fmt2(mm.typed)}, but QuickBooks will get the builder price of ${fmt2(mm.builder)}. Send anyway?`)) return;
+  /* Someone saved a newer version: load it first, so QuickBooks never gets old numbers */
+  if (S.id && !UI.dirty && DB.getMeta && await qbStale('send')) return;
   /* Save first so the estimate gets the proposal number and the link to it is kept with the draft */
   if (!S.id || UI.dirty) {
     QB.busy = true; renderQB();
@@ -3068,19 +3086,33 @@ function renderQbModal(){
       <tbody>${rows}${adj}</tbody><tfoot><tr><td></td><td>Estimate total</td><td></td><td></td><td class="r">${fmt2(t.total)}</td></tr></tfoot></table></div>
     <div class="bar"><button type="button" class="btn primary" id="qbConfirm"${QBP.sending ? ' disabled' : ''}>${QBP.sending ? 'Sending...' : (r.estimate ? 'Update estimate in QuickBooks' : 'Create estimate in QuickBooks')}</button><button type="button" class="btn" id="qbClose2">Cancel</button></div></div>`;
 }
+/* True if a newer version was found (and loaded); the person then checks it and sends again */
+async function qbStale(when){
+  let cur; try { cur = await timed(DB.getMeta(S.id), 15000); } catch { return false; }
+  if (!cur || !isNewer(cur)) return false;
+  const who = cur.updatedBy === AUTH.email ? 'You' : (nameOf(cur.updatedBy) || 'Someone else');
+  QBP = null; renderQbModal();
+  await openDraft(S.id);
+  toast(`${who} saved a newer version${when === 'confirm' ? ' while the QuickBooks review was open' : ''}. It's loaded now: check it, then send to QuickBooks again. Nothing was sent.`);
+  return true;
+}
 async function qbConfirm(){
   if (!QBP || QBP.sending) return;
   const nameEl = $('#qbProjName'); if (nameEl) QBP.projName = nameEl.value.trim();
   if (QBP.proj === 'new' && !QBP.projName) { toast('Enter a name for the new project.'); return; }
   QBP.sending = true; renderQbModal();
+  if (S.id && !UI.dirty && DB.getMeta && await qbStale('confirm')) return;
   try {
     const p = QBP.proj.startsWith('p:') ? {mode:'existing', id:QBP.proj.slice(2), name:(QBP.projects.find(x => 'p:' + x.id === QBP.proj) || {}).name} : QBP.proj === 'new' ? {mode:'new', name:QBP.projName} : {mode:'none'};
     const r = await fnCall('qbo', {action:'send', ...QBP.payload, customerId:QBP.cust === 'new' ? '' : QBP.cust, project:p});
     S.job.qbo = {id:String(r.id ?? ''), docNumber:String(r.docNumber ?? ''), url:safeUrl(r.url), customer:String(r.customer ?? ''), project:String(r.project ?? '')};
     QB.last = r; QBP.done = r;
     const link = S.job.qbo;
-    if (S.id && !UI.dirty && DB.getMeta) { try { const cur = await DB.getMeta(S.id); if (cur && isNewer(cur)) { await openDraft(S.id); S.job.qbo = link; } } catch {} }
+    /* Rare: someone saved in the seconds while it was sending. Keep the link on their newer version, and say the estimate has the earlier numbers. */
+    let raced = false;
+    if (S.id && !UI.dirty && DB.getMeta) { try { const cur = await DB.getMeta(S.id); if (cur && isNewer(cur)) { raced = true; await openDraft(S.id); } } catch {} }
     S.job.qbo = link;
+    if (raced) setTimeout(() => toast('Someone saved changes while this was sending, so the QuickBooks estimate has the earlier numbers. Click "Review and update QuickBooks estimate" to send the latest.'), 1500);
     dirty();
     if (!(await saveDraft('status'))) toast('The estimate was created, but the draft did not save. Click Save draft now so the link to the estimate is kept.');
   } catch (e) { toast(qbErr(e) + (e.detail && e.message === 'qbo_error' ? ': ' + e.detail : '')); }
