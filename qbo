@@ -171,7 +171,7 @@ Deno.serve(async (req) => {
       let company = "";
       try { const d = await qbo(`/companyinfo/${c.realm_id}`); company = d?.CompanyInfo?.CompanyName || ""; }
       catch (e) { if (e instanceof Fail && e.code === "reconnect") return json({ connected: false, needsReconnect: true, env: ENV }); }
-      return json({ connected: true, env: c.env, company, connectedBy: c.connected_by });
+      return json({ connected: true, env: c.env, company, connectedBy: c.connected_by, realm: c.realm_id });
     }
 
     if (body.action === "connect_url") {
@@ -217,11 +217,26 @@ Deno.serve(async (req) => {
       const find = itemIndex(await allItems());
       const fb = find(body.fallback || "Services");
       const lines = (Array.isArray(body.lines) ? body.lines : []).map((l: any) => { const it = find(l.code); return { code: l.code || "", found: !!it, itemName: it ? it.Name : (fb ? fb.Name : "") }; });
-      let estimate = null;
-      if (body.estimateId) { try { const e = await qbo(`/estimate/${encodeURIComponent(body.estimateId)}`); estimate = { id: e.Estimate.Id, docNumber: e.Estimate.DocNumber || "", customer: e.Estimate.CustomerRef?.name || "" }; } catch { estimate = null; } }
-      let company = "";
-      try { const c2 = await connection(); const d = await qbo(`/companyinfo/${c2.realm_id}`); company = d?.CompanyInfo?.CompanyName || ""; } catch { /* optional */ }
-      return json({ company, env: ENV, customer: cust.exact, candidates: cust.candidates, projects, suggestedProject: suggested ? suggested.id : null, lines, fallback: fb ? fb.Name : null, estimate });
+      let estimate: any = null;
+      if (body.estimateId) {
+        try {
+          const e = (await qbo(`/estimate/${encodeURIComponent(body.estimateId)}`)).Estimate;
+          estimate = { id: e.Id, docNumber: e.DocNumber || "", status: e.TxnStatus || "", customer: e.CustomerRef?.name || "",
+            customerId: "", customerName: "", projectId: "", projectName: "", projects: [] };
+          // The estimate sits under a customer, or under a project (a sub-customer) of that customer
+          try {
+            const ref = (await qbo(`/customer/${encodeURIComponent(e.CustomerRef?.value || "")}`)).Customer;
+            if (ref?.Job && ref?.ParentRef?.value) {
+              const parent = (await qbo(`/customer/${encodeURIComponent(ref.ParentRef.value)}`)).Customer;
+              Object.assign(estimate, { customerId: parent.Id, customerName: parent.DisplayName, projectId: ref.Id, projectName: ref.DisplayName });
+            } else if (ref) Object.assign(estimate, { customerId: ref.Id, customerName: ref.DisplayName });
+            if (estimate.customerId) estimate.projects = await projectsOf(estimate.customerId);
+          } catch { /* optional */ }
+        } catch { estimate = null; }
+      }
+      let company = "", realm = "";
+      try { const c2 = await connection(); realm = c2.realm_id; const d = await qbo(`/companyinfo/${c2.realm_id}`); company = d?.CompanyInfo?.CompanyName || ""; } catch { /* optional */ }
+      return json({ company, env: ENV, realm, customer: cust.exact, candidates: cust.candidates, projects, suggestedProject: suggested ? suggested.id : null, lines, fallback: fb ? fb.Name : null, estimate });
     }
 
     if (body.action === "send") {
@@ -279,15 +294,30 @@ Deno.serve(async (req) => {
         }
         if (cur?.Estimate) {
           const status = String(cur.Estimate.TxnStatus || "");
-          if (/closed|converted/i.test(status)) throw new Fail("qbo_error", `The QuickBooks estimate is ${status}, so it can't be changed. Reopen it in QuickBooks, or unlink it to send a new one.`);
+          if (/closed|converted/i.test(status)) throw new Fail("qbo_error", `The QuickBooks estimate is ${status}, so it can't be changed. Reopen it in QuickBooks, or click Unlink under the QuickBooks link in the builder to send a new one.`);
           // sparse update: only the fields sent here change; memo, email, terms and other fields edited in QuickBooks stay
           saved = (await qbo("/estimate", { method: "POST", body: JSON.stringify({ ...est, Id: cur.Estimate.Id, SyncToken: cur.Estimate.SyncToken, sparse: true }) })).Estimate;
           updated = true;
         }
       }
+      // No link yet (first send, or a retry after the reply was lost): if this proposal number already has an open
+      // estimate made by the builder in this company, update that one instead of making a duplicate.
+      // Estimates the person unlinked on purpose (notIds) are skipped.
+      if (!saved && body.docNumber && !body.estimateId) {
+        const skip = new Set((Array.isArray(body.notIds) ? body.notIds : []).map(String));
+        try {
+          const found = (await q(`select * from Estimate where DocNumber = '${esc(String(body.docNumber).slice(0, 21))}'`))?.QueryResponse?.Estimate || [];
+          const mine = found.find((e: any) => !skip.has(String(e.Id)) && /Dousefire Proposal Builder/.test(String(e.PrivateNote || "")) && !/closed|converted/i.test(String(e.TxnStatus || "")));
+          if (mine) {
+            saved = (await qbo("/estimate", { method: "POST", body: JSON.stringify({ ...est, Id: mine.Id, SyncToken: mine.SyncToken, sparse: true }) })).Estimate;
+            updated = true;
+          }
+        } catch (e) { console.error("Duplicate check failed, creating a new estimate", String(e)); }
+      }
       if (!saved) saved = (await qbo("/estimate", { method: "POST", body: JSON.stringify(est) })).Estimate;
+      const realm = (await connection()).realm_id;
       return json({ id: saved.Id, docNumber: saved.DocNumber || "", total: saved.TotalAmt, url: `${WEB}/app/estimate?txnId=${saved.Id}`,
-        customer: customerName, project: projectName, projectCreated, unmatched, fallback: fallback ? fallback.Name : "", updated });
+        customer: customerName, project: projectName, projectCreated, unmatched, fallback: fallback ? fallback.Name : "", updated, realm, env: ENV });
     }
 
     return json({ error: "bad_request" }, 400);
