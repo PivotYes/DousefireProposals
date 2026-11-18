@@ -1787,7 +1787,8 @@ function cleanState(o){
   ['customer','project','addr1','addr2','date','dateLabel','rev','num','dwgDate','dwgBy','dwgWord','subject','rep'].forEach(k => { if (k in job) job[k] = String(job[k] ?? ''); });
   if (job.dateLabel && !['eff', 'rev'].includes(job.dateLabel)) job.dateLabel = 'eff';
   if (job.clickup) job.clickup = {id:String(job.clickup.id ?? ''), name:String(job.clickup.name ?? ''), url:safeUrl(job.clickup.url)};
-  if (job.qbo) job.qbo = {id:String(job.qbo.id ?? ''), docNumber:String(job.qbo.docNumber ?? ''), url:safeUrl(job.qbo.url), customer:String(job.qbo.customer ?? ''), project:String(job.qbo.project ?? '')};
+  if (job.qbo) job.qbo = {id:String(job.qbo.id ?? ''), docNumber:String(job.qbo.docNumber ?? ''), url:safeUrl(job.qbo.url), customer:String(job.qbo.customer ?? ''), project:String(job.qbo.project ?? ''), realm:String(job.qbo.realm ?? ''), env:String(job.qbo.env ?? '')};
+  if (job.qboOld != null) job.qboOld = (Array.isArray(job.qboOld) ? job.qboOld : []).map(String).slice(-20);
   o.job = job;
   return o;
 }
@@ -2792,13 +2793,15 @@ async function sendChat(){
   CHAT.push({role:'user', content:text}); inp.value = ''; UI.chatBusy = true; renderChat();
   $('#chatSend').textContent = 'Reading...';
   try {
-    const {data, error} = await AUTH.sb.functions.invoke('fill-proposal', {body:{
-      messages:CHAT.map(m => ({role:m.role, content:m.content})), catalog:catalog(),
-      current:{type:S.type, job:S.job, answers:S.type ? A() : {}}
-    }});
-    if (error || !data || data.error) {
-      const code = data && data.error;
-      CHAT.push({role:'assistant', content: code === 'not_on_team' ? 'Your email is not on the team list yet.' : code === 'missing_key' ? 'The AI key is not set up yet in Supabase.' : 'Something went wrong. Try again in a moment.'});
+    let data = null, code = '';
+    try {
+      data = await fnCall('fill-proposal', {
+        messages:CHAT.map(m => ({role:m.role, content:m.content})), catalog:catalog(),
+        current:{type:S.type, job:S.job, answers:S.type ? A() : {}}
+      });
+    } catch (e) { code = e.message || 'error'; }
+    if (code) {
+      CHAT.push({role:'assistant', content: ({not_on_team:'Your email is not on the team list yet.', missing_key:'The AI key is not set up yet in Supabase (ANTHROPIC_API_KEY under Edge Functions → Secrets).', ai_error:'The AI service had a problem. Try again in a moment.', bad_request:'Type a description of the project first.'})[code] || 'Something went wrong. Try again in a moment.'});
     } else if (S !== doc) {
       toast('You switched proposals while the AI was reading, so nothing was filled in. Ask again on this one.');
     } else {
@@ -3012,7 +3015,7 @@ function qbSendBtn(){
 function qbNote(){
   let h = '';
   if (!window.QB) return h;
-  if (S.job.qbo) h += `<p class="small qbLink">QuickBooks estimate${S.job.qbo.docNumber ? ' #' + esc(S.job.qbo.docNumber) : ''}${S.job.qbo.customer ? ' for ' + esc(S.job.qbo.customer) + (S.job.qbo.project ? ' › ' + esc(S.job.qbo.project) : '') : ''}${safeUrl(S.job.qbo.url) ? ` · <a href="${esc(safeUrl(S.job.qbo.url))}" target="_blank" rel="noopener">Open in QuickBooks</a>` : ''}</p>`;
+  if (S.job.qbo) h += `<p class="small qbLink">QuickBooks estimate${S.job.qbo.docNumber ? ' #' + esc(S.job.qbo.docNumber) : ''}${S.job.qbo.customer ? ' for ' + esc(S.job.qbo.customer) + (S.job.qbo.project ? ' › ' + esc(S.job.qbo.project) : '') : ''}${safeUrl(S.job.qbo.url) ? ` · <a href="${esc(safeUrl(S.job.qbo.url))}" target="_blank" rel="noopener">Open in QuickBooks</a>` : ''}${canReview() && DB ? ' · <button type="button" class="linkbtn" id="qbUnlink">Unlink</button>' : ''}</p>`;
   if (QB.last && QB.last.unmatched && QB.last.unmatched.length) h += `<p class="small qbWarn">These lines didn't match a QuickBooks item and were sent as "${esc(QB.last.fallback)}": ${QB.last.unmatched.map(esc).join(', ')}. Fix the item codes in the Logic map so they match QuickBooks item names.</p>`;
   if (DB && QB.checked && !QB.connected) h += `<p class="small">${QB.needsReconnect ? 'The QuickBooks connection expired.' : 'QuickBooks is not connected.'}${roleOf() === 'admin' ? ' Connect it in the Team tab.' : ' An admin can connect it in the Team tab.'}</p>`;
   return h;
@@ -3020,7 +3023,7 @@ function qbNote(){
 const plain = html => { const d = document.createElement('div'); d.innerHTML = html; return d.textContent.replace(/\s+/g, ' ').trim(); };
 async function qbStatus(){
   if (!DB) return;
-  try { const r = await fnCall('qbo', {action:'status'}); Object.assign(QB, {connected:!!r.connected, company:r.company || '', env:r.env || '', needsReconnect:!!r.needsReconnect}); }
+  try { const r = await fnCall('qbo', {action:'status'}); Object.assign(QB, {connected:!!r.connected, company:r.company || '', env:r.env || '', realm:r.realm || '', needsReconnect:!!r.needsReconnect}); }
   catch { QB.connected = false; }
   QB.checked = true;
   if (QB.connected) await qbLoadItems();
@@ -3030,7 +3033,7 @@ async function qbStatus(){
 function qbPayload(){
   const t = totals(), j = S.job;
   return {
-    estimateId:j.qbo && j.qbo.id, docNumber:j.num, txnDate:j.date, fallback:QB.fallback,
+    estimateId:j.qbo && j.qbo.id, notIds:j.qboOld || [], docNumber:j.num, txnDate:j.date, fallback:QB.fallback,
     customer:{name:j.customer, addr1:j.addr1, addr2:j.addr2},
     lines:t.incl.map(i => ({code:i.code || '', name:label(i), description:plain(inText(i)) || label(i), qty:qty(i), rate:rate(i)})),
     adjustment:t.ovr ? t.total - t.base : 0,
@@ -3058,10 +3061,28 @@ async function qbSend(){
   try {
     const payload = qbPayload();
     const r = await fnCall('qbo', {action:'preview', ...payload, projectName:j.addr1});
-    QBP = {r, payload, done:null, sending:false,
-      cust: r.customer ? r.customer.id : 'new',
-      projects: r.projects || [],
-      proj: r.suggestedProject ? 'p:' + r.suggestedProject : (j.addr1 ? 'new' : 'none'),
+    /* Is the saved link really this company's estimate? A link from the test company (or another company) must never
+       update whatever estimate happens to have the same ID here. */
+    const link = j.qbo, e = r.estimate, realmNow = r.realm || QB.realm || '';
+    const wrongLink = !!(link && link.id && (
+      (link.realm && realmNow && link.realm !== realmNow) ||
+      (!link.realm && link.env && r.env && link.env !== r.env) ||
+      (e && link.docNumber && e.docNumber !== link.docNumber)));
+    if (wrongLink) { payload.estimateId = undefined; r.estimate = null; }
+    const upd = !wrongLink && r.estimate;
+    let cust = r.customer ? r.customer.id : 'new', projects = r.projects || [], proj = r.suggestedProject ? 'p:' + r.suggestedProject : (j.addr1 ? 'new' : 'none');
+    if (upd && r.estimate.customerId) {
+      /* Updating: keep the customer and project the estimate already has */
+      cust = r.estimate.customerId; projects = r.estimate.projects || projects;
+      proj = r.estimate.projectId ? 'p:' + r.estimate.projectId : 'none';
+    } else if (upd && link) {
+      /* Older QuickBooks function: match by the names saved with the link */
+      const named = [r.customer, ...(r.candidates || [])].find(c => c && c.name === link.customer);
+      if (named) cust = named.id;
+      if (!link.project) proj = 'none';
+      else { const pj = projects.find(x => x.name === link.project); proj = pj ? 'p:' + pj.id : proj; }
+    }
+    QBP = {r, payload, done:null, sending:false, cust, projects, proj, wrongLink:wrongLink ? link : null,
       projName: j.addr1 || j.project || ''};
     renderQbModal();
   } catch (e) { toast(qbErr(e) + (e.detail && e.message === 'qbo_error' ? ': ' + e.detail : '')); }
@@ -3081,10 +3102,12 @@ function renderQbModal(){
     return;
   }
   const custOpts = [];
+  if (r.estimate && r.estimate.customerId && (!r.customer || r.customer.id !== r.estimate.customerId)) custOpts.push([r.estimate.customerId, `${r.estimate.customerName} (on this estimate)`]);
   if (r.customer) custOpts.push([r.customer.id, `${r.customer.name}${r.customer.address ? ' · ' + r.customer.address : ''} (existing)`]);
   (r.candidates || []).filter(c => !r.customer || c.id !== r.customer.id).forEach(c => custOpts.push([c.id, `${c.name}${c.address ? ' · ' + c.address : ''} (existing)`]));
   custOpts.push(['new', `Create new customer: ${j.customer}`]);
   const projOpts = (QBP.cust === 'new' ? [] : QBP.projects).map(p => ['p:' + p.id, `${p.name}${p.isProject ? '' : ' (sub-customer)'} (existing)`]);
+  if (QBP.proj.startsWith('p:') && !projOpts.some(o => o[0] === QBP.proj) && r.estimate && 'p:' + r.estimate.projectId === QBP.proj) projOpts.unshift([QBP.proj, `${r.estimate.projectName} (on this estimate)`]);
   projOpts.push(['new', 'Create new project'], ['none', 'No project (estimate goes to the customer)']);
   const sel = (id, opts, cur) => `<select id="${id}">${opts.map(([v, l]) => `<option value="${esc(v)}"${v === cur ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
   const rows = payload.lines.map((l, i) => { const x = r.lines[i] || {}; return `<tr${x.found ? '' : ' class="miss"'}><td>${esc(x.found ? x.itemName : (l.code || '-'))}${x.found ? '' : `<div class="small">Not in QuickBooks. Sent as "${esc(x.itemName || QB.fallback)}"</div>`}</td><td class="d">${esc(l.description)}</td><td class="r">${l.qty}</td><td class="r">${fmt2(l.rate)}</td><td class="r">${fmt2(l.qty * l.rate)}</td></tr>`; }).join('');
@@ -3092,6 +3115,7 @@ function renderQbModal(){
   const missing = r.lines.filter(x => !x.found).length;
   m.innerHTML = `<div class="authCard qbCard" role="dialog" aria-modal="true" aria-labelledby="qbTitle"><div class="authTop"><h2 id="qbTitle">Review before sending to QuickBooks</h2><button type="button" class="linkbtn" id="qbClose">Cancel</button></div>
     <p class="small">Company: <b>${esc(r.company || 'QuickBooks')}</b>${r.env === 'sandbox' ? ' (sandbox test company)' : ''}</p>
+    ${QBP.wrongLink ? `<p class="qbWarn">This draft was linked to estimate${QBP.wrongLink.docNumber ? ' #' + esc(QBP.wrongLink.docNumber) : ''} in a different QuickBooks company (or the test company). That estimate is left alone: this creates a new estimate here, and the draft links to it.</p>` : ''}
     <div class="qbGrid">
       <label class="mini">Customer${sel('qbCust', custOpts, QBP.cust)}</label>
       <label class="mini">Project${sel('qbProj', projOpts, QBP.proj)}</label>
@@ -3121,9 +3145,9 @@ async function qbConfirm(){
   QBP.sending = true; renderQbModal();
   if (S.id && !UI.dirty && DB.getMeta && await qbStale('confirm')) return;
   try {
-    const p = QBP.proj.startsWith('p:') ? {mode:'existing', id:QBP.proj.slice(2), name:(QBP.projects.find(x => 'p:' + x.id === QBP.proj) || {}).name} : QBP.proj === 'new' ? {mode:'new', name:QBP.projName} : {mode:'none'};
+    const p = QBP.proj.startsWith('p:') ? {mode:'existing', id:QBP.proj.slice(2), name:(QBP.projects.find(x => 'p:' + x.id === QBP.proj) || {}).name || (QBP.r.estimate && 'p:' + QBP.r.estimate.projectId === QBP.proj ? QBP.r.estimate.projectName : '')} : QBP.proj === 'new' ? {mode:'new', name:QBP.projName} : {mode:'none'};
     const r = await fnCall('qbo', {action:'send', ...QBP.payload, customerId:QBP.cust === 'new' ? '' : QBP.cust, project:p});
-    S.job.qbo = {id:String(r.id ?? ''), docNumber:String(r.docNumber ?? ''), url:safeUrl(r.url), customer:String(r.customer ?? ''), project:String(r.project ?? '')};
+    S.job.qbo = {id:String(r.id ?? ''), docNumber:String(r.docNumber ?? ''), url:safeUrl(r.url), customer:String(r.customer ?? ''), project:String(r.project ?? ''), realm:String(r.realm || QB.realm || ''), env:String(r.env || QB.env || '')};
     QB.last = r; QBP.done = r;
     const link = S.job.qbo;
     /* Rare: someone saved in the seconds while it was sending. Keep the link on their newer version, and say the estimate has the earlier numbers. */
@@ -3140,6 +3164,13 @@ async function qbConfirm(){
 document.addEventListener('click', e => {
   if (e.target.closest('#qbClose') || e.target.closest('#qbClose2')) { if (QBP && QBP.sending) { toast('Sending to QuickBooks. This closes when it finishes.'); return; } QBP = null; renderQbModal(); return; }
   if (e.target.closest('#qbConfirm')) qbConfirm();
+  if (e.target.closest('#qbUnlink') && S.job.qbo) {
+    if (!confirm(`Unlink QuickBooks estimate${S.job.qbo.docNumber ? ' #' + S.job.qbo.docNumber : ''} from this proposal?\n\nThe estimate stays in QuickBooks. The next send creates a new estimate.`)) return;
+    S.job.qboOld = [...(S.job.qboOld || []), S.job.qbo.id].filter(Boolean).slice(-20);
+    delete S.job.qbo; QB.last = null;
+    dirty(); renderQB(); saveDraft('status');
+    toast('Unlinked. The estimate is still in QuickBooks. The next send creates a new one.');
+  }
 });
 document.addEventListener('change', async e => {
   if (!QBP) return;
