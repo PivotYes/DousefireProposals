@@ -3064,12 +3064,16 @@ async function qbSend(){
     /* Is the saved link really this company's estimate? A link from the test company (or another company) must never
        update whatever estimate happens to have the same ID here. */
     const link = j.qbo, e = r.estimate, realmNow = r.realm || QB.realm || '';
-    const wrongLink = !!(link && link.id && (
-      (link.realm && realmNow && link.realm !== realmNow) ||
-      (!link.realm && link.env && r.env && link.env !== r.env) ||
-      (e && link.docNumber && e.docNumber !== link.docNumber)));
+    const wrongLink = !!(link && link.id && (link.realm
+      ? (realmNow && link.realm !== realmNow)                          /* saved with its company: compare companies */
+      : ((link.env && r.env && link.env !== r.env) || (e && link.docNumber && e.docNumber !== link.docNumber))));  /* older link */
     if (wrongLink) { payload.estimateId = undefined; r.estimate = null; }
+    /* 4: no link, but QuickBooks already has this proposal's estimate (e.g. the reply to an earlier send was lost): update it */
+    if (!wrongLink && r.estimate && r.estimate.existing) payload.estimateId = r.estimate.id;
     const upd = !wrongLink && r.estimate;
+    /* The estimate number was changed in QuickBooks: keep their number */
+    const renumbered = upd && r.estimate.docNumber && r.estimate.docNumber !== String(j.num || '') ? r.estimate.docNumber : '';
+    if (renumbered) payload.docNumber = renumbered;
     let cust = r.customer ? r.customer.id : 'new', projects = r.projects || [], proj = r.suggestedProject ? 'p:' + r.suggestedProject : (j.addr1 ? 'new' : 'none');
     if (upd && r.estimate.customerId) {
       /* Updating: keep the customer and project the estimate already has */
@@ -3082,7 +3086,7 @@ async function qbSend(){
       if (!link.project) proj = 'none';
       else { const pj = projects.find(x => x.name === link.project); proj = pj ? 'p:' + pj.id : proj; }
     }
-    QBP = {r, payload, done:null, sending:false, cust, projects, proj, wrongLink:wrongLink ? link : null,
+    QBP = {r, payload, done:null, sending:false, cust, projects, proj, wrongLink:wrongLink ? link : null, renumbered,
       projName: j.addr1 || j.project || ''};
     renderQbModal();
   } catch (e) { toast(qbErr(e) + (e.detail && e.message === 'qbo_error' ? ': ' + e.detail : '')); }
@@ -3115,7 +3119,9 @@ function renderQbModal(){
   const missing = r.lines.filter(x => !x.found).length;
   m.innerHTML = `<div class="authCard qbCard" role="dialog" aria-modal="true" aria-labelledby="qbTitle"><div class="authTop"><h2 id="qbTitle">Review before sending to QuickBooks</h2><button type="button" class="linkbtn" id="qbClose">Cancel</button></div>
     <p class="small">Company: <b>${esc(r.company || 'QuickBooks')}</b>${r.env === 'sandbox' ? ' (sandbox test company)' : ''}</p>
-    ${QBP.wrongLink ? `<p class="qbWarn">This draft was linked to estimate${QBP.wrongLink.docNumber ? ' #' + esc(QBP.wrongLink.docNumber) : ''} in a different QuickBooks company (or the test company). That estimate is left alone: this creates a new estimate here, and the draft links to it.</p>` : ''}
+    ${QBP.wrongLink ? `<p class="qbWarn">This draft's saved link (estimate${QBP.wrongLink.docNumber ? ' #' + esc(QBP.wrongLink.docNumber) : ''}) doesn't match the estimate QuickBooks has under that link. It may be from the test company, or its number was changed in QuickBooks. To be safe, that estimate is left alone: this creates a new estimate, and the draft links to it. If you'd rather update the old one, cancel and update it in QuickBooks.</p>` : ''}
+    ${r.estimate && r.estimate.existing ? `<p class="small">QuickBooks already has estimate #${esc(r.estimate.docNumber || r.estimate.id)} for this proposal, so this updates it instead of making a second one.</p>` : ''}
+    ${QBP.renumbered ? `<p class="small">The estimate number was changed in QuickBooks to #${esc(QBP.renumbered)}. It keeps that number.</p>` : ''}
     <div class="qbGrid">
       <label class="mini">Customer${sel('qbCust', custOpts, QBP.cust)}</label>
       <label class="mini">Project${sel('qbProj', projOpts, QBP.proj)}</label>
@@ -3126,7 +3132,7 @@ function renderQbModal(){
     ${missing ? `<p class="qbWarn">${missing} line${missing > 1 ? 's are' : ' is'} not in QuickBooks and will be sent as "${esc(r.fallback || QB.fallback)}". Fix the QuickBooks item in Scope review or the Logic map.</p>` : '<p class="good">Every line matches a QuickBooks item.</p>'}
     <div class="tbl"><table class="qb"><thead><tr><th>QuickBooks item</th><th>Description</th><th class="r">Qty</th><th class="r">Rate</th><th class="r">Amount</th></tr></thead>
       <tbody>${rows}${adj}</tbody><tfoot><tr><td></td><td>Estimate total</td><td></td><td></td><td class="r">${fmt2(t.total)}</td></tr></tfoot></table></div>
-    <div class="bar"><button type="button" class="btn primary" id="qbConfirm"${QBP.sending ? ' disabled' : ''}>${QBP.sending ? 'Sending...' : (r.estimate ? 'Update estimate in QuickBooks' : 'Create estimate in QuickBooks')}</button><button type="button" class="btn" id="qbClose2">Cancel</button></div></div>`;
+    <div class="bar"><button type="button" class="btn primary" id="qbConfirm"${QBP.sending || QBP.loadingProj ? ' disabled' : ''}>${QBP.sending ? 'Sending...' : QBP.loadingProj ? 'Loading projects...' : (r.estimate ? 'Update estimate in QuickBooks' : 'Create estimate in QuickBooks')}</button><button type="button" class="btn" id="qbClose2">Cancel</button></div></div>`;
 }
 /* True if a newer version was found (and loaded); the person then checks it and sends again */
 async function qbStale(when){
@@ -3139,7 +3145,7 @@ async function qbStale(when){
   return true;
 }
 async function qbConfirm(){
-  if (!QBP || QBP.sending) return;
+  if (!QBP || QBP.sending || QBP.loadingProj) return;
   const nameEl = $('#qbProjName'); if (nameEl) QBP.projName = nameEl.value.trim();
   if (QBP.proj === 'new' && !QBP.projName) { toast('Enter a name for the new project.'); return; }
   QBP.sending = true; renderQbModal();
@@ -3177,8 +3183,12 @@ document.addEventListener('change', async e => {
   if (e.target.id === 'qbProjName') { QBP.projName = e.target.value; return; }
   if (e.target.id === 'qbProj') { QBP.proj = e.target.value; renderQbModal(); return; }
   if (e.target.id === 'qbCust') {
-    QBP.cust = e.target.value; QBP.projects = [];
-    if (QBP.cust !== 'new') { try { QBP.projects = (await fnCall('qbo', {action:'projects', customerId:QBP.cust})).projects || []; } catch {} }
+    const mine = QBP, picked = e.target.value;
+    mine.cust = picked; mine.projects = []; mine.proj = 'none'; mine.loadingProj = picked !== 'new'; renderQbModal();
+    let list = [];
+    if (picked !== 'new') { try { list = (await fnCall('qbo', {action:'projects', customerId:picked})).projects || []; } catch {} }
+    if (QBP !== mine || mine.cust !== picked) return;   /* closed, or another customer picked meanwhile */
+    mine.projects = list; mine.loadingProj = false;
     const want = String(S.job.addr1 || '').toLowerCase().replace(/[^a-z0-9]/g, '');
     const hit = QBP.projects.find(p => p.name.toLowerCase().replace(/[^a-z0-9]/g, '') === want);
     QBP.proj = hit ? 'p:' + hit.id : (S.job.addr1 ? 'new' : 'none');
