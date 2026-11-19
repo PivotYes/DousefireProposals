@@ -1341,6 +1341,8 @@ function checkEditPrice(){
 /* Warn when text runs past the bottom of a page (mostly while editing text by hand) */
 function checkOverflow(){
   const bad = [...document.querySelectorAll('#pages .pb')].map((b, i) => b.scrollHeight > b.clientHeight + 1 ? i + 2 : 0).filter(Boolean);
+  const cv = document.querySelector('#pages .cvw');   /* cover text must stay above the letterhead footer (86px band) */
+  if (cv && cv.offsetTop + cv.offsetHeight > 1056 - 86) bad.unshift(1);
   const el = $('#overflowNote'); if (!el) return bad;
   el.hidden = !bad.length;
   el.textContent = bad.length ? `Text runs past the bottom of page ${bad.join(', ')} and will be cut off. Shorten the text${UI.editing ? '' : ' or split it into more lines'}.` : '';
@@ -1840,7 +1842,11 @@ function applyDraft(o, d, meta){
 /* database starts in initBackend() */
 
 /* ---------- Exports ---------- */
-function loadScript(src){ return new Promise((res, rej) => { if (document.querySelector(`script[src="${src}"]`)) return res(); const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s); }); }
+const LOADING = {};
+function loadScript(src){
+  if (!LOADING[src]) LOADING[src] = new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = () => { delete LOADING[src]; s.remove(); rej(new Error('load')); }; document.head.appendChild(s); });
+  return LOADING[src];
+}
 const LIBS = {
   jspdf:'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js',
   docx:'https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.js'
@@ -2709,8 +2715,16 @@ async function setStatus(status, reviewer, note){
   let extra = '';
   if (status === 'approved' && S.job.clickup && DB) {
     PDF_DROPPED = new Set();
-    let ok = false; try { ok = await cuAttach(await makePdf(), fileBase() + ' - Approved.pdf'); } catch { ok = false; CU.lastErr = 'The PDF could not be made.'; }
-    extra = ok ? ' The approved PDF was saved to the ClickUp job.' : ` The approved PDF could NOT be saved to ClickUp (${CU.lastErr}). Download the PDF and attach it to the job by hand.`;
+    /* Capture the approved proposal now: the manager may open the next draft while the PDF tools load */
+    const doc = S, task = S.job.clickup.id, name = fileBase() + ' - Approved.pdf';
+    let ok = false, moved = false;
+    try {
+      await loadScript(LIBS.jspdf);
+      if (S !== doc) moved = true;
+      else { const blob = await makePdf(); ok = await cuAttach(blob, name, task); }
+    } catch { ok = false; CU.lastErr = 'The PDF could not be made.'; }
+    extra = moved ? ' You opened another proposal before the approved PDF was made, so it was NOT saved to ClickUp. Open the approved proposal, turn on "Also save this download to the ClickUp job", and click Download PDF.'
+      : ok ? ' The approved PDF was saved to the ClickUp job.' : ` The approved PDF could NOT be saved to ClickUp (${CU.lastErr}). Download the PDF and attach it to the job by hand.`;
     extra += droppedMsg();
   }
   toast((status === 'approved' ? 'Approved.' : status === 'review' ? 'Sent for review.' : status === 'changes' ? 'Sent back for changes.' : 'Reopened.') + extra);
@@ -2764,7 +2778,8 @@ function mergeRows(existing, incoming, keyOf){
   return out.length ? out : incoming;
 }
 function applyFill(r){
-  if (r.type && TYPES[r.type] && S.type !== r.type) { S.type = r.type; UI.prevQ = []; }
+  const resi = t => t === 'res' || t === 'r13';
+  if (r.type && TYPES[r.type] && S.type !== r.type && !(resi(S.type) && resi(r.type))) { S.type = r.type; UI.prevQ = []; }
   ['customer','project','addr1','addr2','dwgDate','dwgBy'].forEach(k => { const v = r.job && r.job[k]; if (v != null && String(v).trim()) S.job[k] = String(v).trim(); });
   if (!S.type) { fillInputs(); renderAll(); dirty(); return; }
   const a = A(), Q = T().Q;
@@ -2964,9 +2979,10 @@ async function cuGet(id){
 }
 function blobToBase64(blob){ return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1]); r.onerror = rej; r.readAsDataURL(blob); }); }
 /* Returns true if saved to the ClickUp job, false if it failed (CU.lastErr says why). The caller shows the message. */
-async function cuAttach(blob, filename){
-  if (!S.job.clickup || !DB) return null;
-  try { await cuCall({action:'attach', task:S.job.clickup.id, filename, mime:blob.type || 'application/octet-stream', base64:await blobToBase64(blob)}); return true; }
+async function cuAttach(blob, filename, taskId){
+  const task = taskId || (S.job.clickup && S.job.clickup.id);
+  if (!task || !DB) return null;
+  try { await cuCall({action:'attach', task, filename, mime:blob.type || 'application/octet-stream', base64:await blobToBase64(blob)}); return true; }
   catch (e) { CU.lastErr = cuErr(e); return false; }
 }
 function cuMapHTML(){
